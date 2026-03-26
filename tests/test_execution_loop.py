@@ -7,7 +7,7 @@ def make_mock_agent(tool_names: list[str] = None):
     agent.name = "Test Agent"
     agent.tools = []
 
-    for name in (tool_names or []):
+    for name in tool_names or []:
         tool = MagicMock()
         tool.name = name
         agent.tools.append(tool)
@@ -19,8 +19,32 @@ def make_prompt(task: str):
     return {
         "system": "You are Test Agent, researcher.",
         "tools": [],
-        "user": task
+        "user": task,
     }
+
+
+def _make_groq_response(content=None, tool_name=None, tool_args=None):
+    """Creates a mock response from Groq's API."""
+    from unittest.mock import MagicMock
+    import json
+
+    message = MagicMock()
+    message.role = "assistant"
+
+    if tool_name:
+        tool_call = MagicMock()
+        tool_call.id = "call_123"
+        tool_call.function.name = tool_name
+        tool_call.function.arguments = json.dumps(tool_args or {})
+        message.tool_calls = [tool_call]
+        message.content = None
+    else:
+        message.tool_calls = None
+        message.content = content or "Done!"
+
+    response = MagicMock()
+    response.choices[0].message = message
+    return response
 
 
 def test_returns_required_keys():
@@ -55,8 +79,37 @@ def test_steps_is_list():
     assert len(result["steps"]) > 0
 
 
-def test_tool_call_step_recorded():
-    agent = make_mock_agent(tool_names=["web-search"])
+def test_tool_call_step_recorded(monkeypatch):
+    from app.core import execution_loop
+    import json
+
+    call_count = {"n": 0}
+
+    def controlled_llm(**kwargs):
+        call_count["n"] += 1
+        message = MagicMock()
+        message.role = "assistant"
+
+        if call_count["n"] == 1:
+            tool_call = MagicMock()
+            tool_call.id = "call_123"
+            tool_call.function.name = "web_search"
+            tool_call.function.arguments = json.dumps({"query": "AI trends"})
+            message.tool_calls = [tool_call]
+            message.content = None
+        else:
+            message.tool_calls = None
+            message.content = "Here are the results."
+
+        response = MagicMock()
+        response.choices[0].message = message
+        return response
+
+    monkeypatch.setattr(
+        execution_loop.client.chat.completions, "create", controlled_llm
+    )
+
+    agent = make_mock_agent(tool_names=["web_search"])
     prompt = make_prompt("search for AI trends")
     result = run_execution_loop(prompt, agent)
     step_types = [s["type"] for s in result["steps"]]
@@ -82,12 +135,15 @@ def test_max_steps_safeguard(monkeypatch):
     """Force the mock LLM to always return tool calls to trigger max steps."""
     from app.core import execution_loop
 
-    def always_tool_call(prompt, context, available_tool_names):
-        return {"type": "tool_call", "tool": "web-search", "input": "test"}
+    monkeypatch.setattr(
+        execution_loop.client.chat.completions,
+        "create",
+        lambda **kwargs: _make_groq_response(
+            tool_name="web_search", tool_args={"query": "test"}
+        ),
+    )
 
-    monkeypatch.setattr(execution_loop, "call_mock_llm", always_tool_call)
-
-    agent = make_mock_agent(tool_names=["web-search"])
+    agent = make_mock_agent(tool_names=["web_search"])
     prompt = make_prompt("search forever")
     result = run_execution_loop(prompt, agent)
 
@@ -99,12 +155,15 @@ def test_max_steps_does_not_exceed_limit(monkeypatch):
     from app.core import execution_loop
     from app.config import MAX_EXECUTION_STEPS
 
-    def always_tool_call(prompt, context, available_tool_names):
-        return {"type": "tool_call", "tool": "web-search", "input": "test"}
+    monkeypatch.setattr(
+        execution_loop.client.chat.completions,
+        "create",
+        lambda **kwargs: _make_groq_response(
+            tool_name="web_search", tool_args={"query": "test"}
+        ),
+    )
 
-    monkeypatch.setattr(execution_loop, "call_mock_llm", always_tool_call)
-
-    agent = make_mock_agent(tool_names=["web-search"])
+    agent = make_mock_agent(tool_names=["web_search"])
     prompt = make_prompt("search forever")
     result = run_execution_loop(prompt, agent)
 
@@ -118,16 +177,19 @@ def test_full_flow_with_tool(monkeypatch):
 
     call_count = {"n": 0}
 
-    def controlled_llm(prompt, context, available_tool_names):
+    def controlled_llm(**kwargs):
         call_count["n"] += 1
         if call_count["n"] == 1:
-            return {"type": "tool_call", "tool": "web-search",
-                    "input": "AI news"}
-        return {"type": "final_response", "content": "Done!"}
+            return _make_groq_response(
+                tool_name="web_search", tool_args={"query": "AI news"}
+            )
+        return _make_groq_response(content="Done!")
 
-    monkeypatch.setattr(execution_loop, "call_mock_llm", controlled_llm)
+    monkeypatch.setattr(
+        execution_loop.client.chat.completions, "create", controlled_llm
+    )
 
-    agent = make_mock_agent(tool_names=["web-search"])
+    agent = make_mock_agent(tool_names=["web_search"])
     prompt = make_prompt("search for AI news")
     result = run_execution_loop(prompt, agent)
 

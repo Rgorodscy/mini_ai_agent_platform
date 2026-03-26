@@ -1,48 +1,91 @@
+# -------------------------
 # Python
+# -------------------------
 __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
-.Python
+*.so
 *.egg-info/
+*.egg
 dist/
 build/
+pip-wheel-metadata/
 
-# Virtual environment
+# -------------------------
+# Virtual environments
+# -------------------------
 venv/
 env/
+.venv/
 .env/
 
-# Environment variables — never commit secrets
+# -------------------------
+# Environment variables
+# -------------------------
 .env
+.env.*
 
+# -------------------------
 # Databases
+# -------------------------
 *.db
 *.sqlite
 *.sqlite3
 
+# -------------------------
 # Alembic
+# -------------------------
 alembic/versions/__pycache__/
 
+# -------------------------
 # Testing
+# -------------------------
 .pytest_cache/
 .coverage
+.coverage.*
 htmlcov/
 coverage.xml
 
+# -------------------------
 # IDEs
+# -------------------------
 .vscode/
 .idea/
 *.iml
 
-# OS
+# -------------------------
+# OS files
+# -------------------------
 .DS_Store
 Thumbs.db
 
+# -------------------------
 # Logs
+# -------------------------
 *.log
 
-# Coverage
-.coverage
-htmlcov/
-coverage.xml
+# -------------------------
+# MyPy / Type checking
+# -------------------------
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# -------------------------
+# Pyright / Pylance
+# -------------------------
+pyrightconfig.json
+
+# -------------------------
+# Jupyter
+# -------------------------
+.ipynb_checkpoints/
+
+# -------------------------
+# Misc
+# -------------------------
+*.tmp
+
+# Local config files
+pyproject.toml
