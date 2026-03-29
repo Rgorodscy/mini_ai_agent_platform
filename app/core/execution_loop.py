@@ -1,17 +1,15 @@
 import json
 import operator
 from typing import TypedDict, Annotated, Any
-from groq import Groq
 from langgraph.graph import StateGraph, END
 
 from app.models.agent import Agent
 from app.core.tool_implementations import TOOL_REGISTRY
-from app.config import MAX_EXECUTION_STEPS
+from app.config import MAX_EXECUTION_STEPS, groq_client
 from app.logger import get_logger
 
 logger = get_logger(__name__)
 
-client = Groq()
 GROQ_MODEL = "llama-3.3-70b-versatile"
 
 
@@ -25,7 +23,9 @@ class ExecutionState(TypedDict):
     max_steps: int
 
 
-def _build_tools_for_agent(agent: Agent) -> tuple[list[dict], dict]:
+def _build_tools_for_agent(
+    agent: Agent, tenant_id: str
+) -> tuple[list[dict], dict]:
     """
     Cross checks the tools in the agent's database with
     the available implementations in the TOOL_REGISTRY.
@@ -58,7 +58,13 @@ def _build_tools_for_agent(agent: Agent) -> tuple[list[dict], dict]:
                 },
             }
         )
-        tool_map[tool.name] = impl["func"]
+        # inject tenant_id to search_knowledge
+        if tool.name == "search_knowledge":
+            from app.core.tool_implementations import make_search_knowledge
+
+            tool_map[tool.name] = make_search_knowledge(tenant_id)
+        else:
+            tool_map[tool.name] = impl["func"]
 
     return schemas, tool_map
 
@@ -72,7 +78,7 @@ def call_model(state: ExecutionState) -> dict:
     tool_choice = "none" if state.get("force_text") else "auto"
 
     def _call(choice):
-        return client.chat.completions.create(
+        return groq_client.chat.completions.create(
             model=GROQ_MODEL,
             messages=state["messages"],
             tools=state["active_tools"],
@@ -236,7 +242,9 @@ def _build_graph():
 _agent_graph = _build_graph()
 
 
-def run_execution_loop(prompt: dict, agent: Agent) -> dict:
+def run_execution_loop(
+    prompt: dict, agent: Agent, tenant_id: str = ""
+) -> dict:
     """
     Runs the multi-step agent execution loop.
     - Calls LLM
@@ -244,7 +252,7 @@ def run_execution_loop(prompt: dict, agent: Agent) -> dict:
     - Repeats until final response or max steps reached
     Returns a dict with steps taken and the final response.
     """
-    active_tools, tool_map = _build_tools_for_agent(agent)
+    active_tools, tool_map = _build_tools_for_agent(agent, tenant_id)
 
     if not active_tools:
         logger.warning(f"Agent without implemented tools | agent={agent.name}")
@@ -253,15 +261,19 @@ def run_execution_loop(prompt: dict, agent: Agent) -> dict:
 
     system_content = (
         f"You are {agent.name}. {agent.role}.\n{agent.description}\n\n"
-        f"Use the available tools when needed. "
-        f"Think before acting. "
-        f"When you have enough information, respond directly without calling any tool."
+        f"Use the available tools when needed. Included one that searches "
+        f"for internal knowledge, called search_knowledge if needed. "
+        f"Use it if you think it's necessary"
+        f" to find information to complete the task. Think before acting. "
+        f"When you have enough information, respond directly without calling"
+        f" any tool.If there is information you don't know, "
+        f"say you don't know, don't try to guess or make it up.\n\n"
     )
 
     initial_state: ExecutionState = {
         "messages": [
             {"role": "system", "content": system_content},
-            {"role": "user", "content": prompt.get("task", "")},
+            {"role": "user", "content": prompt.get("user", "")},
         ],
         "steps": [],
         "active_tools": all_tools,

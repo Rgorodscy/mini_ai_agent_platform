@@ -13,10 +13,22 @@ def calculator(expression: str) -> str:
         return f"ERROR: invalid expression — {e}"
 
 
-def search_knowledge(query: str) -> str:
-    # Placeholder
-    logger.info(f"search_knowledge called | query={query}")
-    return f"No results found for: '{query}' (RAG not implemented yet)"
+def make_search_knowledge(tenant_id: str):
+    def search_knowledge(query: str) -> str:
+        from app.core.rag import rag_pipeline
+
+        try:
+            results = rag_pipeline(query, tenant_id)
+            if not results:
+                return f"No results found for: '{query}'"
+            return f"Relevant knowledge for '{query}':\n\n{results}"
+        except Exception as e:
+            logger.error(
+                f"Error in search_knowledge | query={query} error={e}"
+            )
+            return f"ERROR: failed to retrieve knowledge — {e}"
+
+    return search_knowledge
 
 
 def summarize(text: str) -> str:
@@ -99,7 +111,7 @@ TOOL_REGISTRY: dict[str, dict] = {
         },
     },
     "search_knowledge": {
-        "func": search_knowledge,
+        "func": None,
         "parameters": {
             "type": "object",
             "properties": {
