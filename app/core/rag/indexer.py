@@ -13,7 +13,7 @@ def ingest(
     Embed and store document in ChromaDB.
     Simple chunk by paragraph.
     """
-    chunks = semantic_chunk(text)
+    chunks = semantic_chunk(text, embedder.encode)
     if not chunks:
         chunks = [text]
 

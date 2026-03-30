@@ -89,3 +89,6 @@ pyrightconfig.json
 
 # Local config files
 pyproject.toml
+*.docx
+*.pdf
+*.txt
