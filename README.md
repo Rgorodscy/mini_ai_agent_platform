@@ -133,7 +133,7 @@ app/
         ├── pipeline.py       # Orchestration (answer_from_knowledge)
         └── utils.py          # Embedder & ChromaDB clients
 
-tests/                        # 247 tests, no network access
+tests/                        # 259 tests, no network access
 alembic/                      # Database migrations
 .github/workflows/ci.yml      # Tests, migrations, image build
 Dockerfile                    # Multi-stage, CPU-only torch, non-root
@@ -216,7 +216,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-247 tests, ~20 seconds, **90% coverage**.
+259 tests, ~18 seconds, **90% coverage**.
 
 The suite is hermetic: an autouse fixture in `tests/conftest.py` replaces
 the LLM client, the embedding model and the cross-encoder with fakes for
@@ -320,7 +320,7 @@ Re-posting the same `doc_id` replaces that document's chunks.
 ```bash
 curl -X POST http://localhost:8000/agents/{agent_id}/run \
   -H "x-api-key: $API_KEY" -H "Content-Type: application/json" \
-  -d '{"task": "What is our refund policy?", "model": "llama-3.3-70b-versatile"}'
+  -d '{"task": "What is our refund policy?", "model": "openai/gpt-oss-120b"}'
 ```
 
 **Example response:**
@@ -330,7 +330,7 @@ curl -X POST http://localhost:8000/agents/{agent_id}/run \
   "id": "abc123",
   "agent_id": "xyz789",
   "tenant_id": "tenant_a",
-  "model": "llama-3.3-70b-versatile",
+  "model": "openai/gpt-oss-120b",
   "task": "What is our refund policy?",
   "structured_prompt": { "system": "...", "tools": [...], "user": "..." },
   "steps": [
@@ -458,6 +458,18 @@ known phrasings, not novel ones.
 ---
 
 ## Known limitations
+
+**The model list has to match your provider account.** Groq retires models,
+so a name that worked last month can 404 today — `llama-3.3-70b-versatile`
+did, during this project's own testing. `GROQ_MODELS` is configuration for
+exactly this reason, but nothing validates it against the live catalogue at
+boot: a stale entry is only caught when a run against it returns 502. To
+see what your account serves:
+
+```bash
+python -c "from app.core.llm import _groq_client; \
+    print(sorted(m.id for m in _groq_client().models.list().data))"
+```
 
 **Only one provider is implemented.** `core/llm.py` defines the provider
 registry and routing, but Groq is the only adapter. Adding OpenAI or

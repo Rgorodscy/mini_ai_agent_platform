@@ -11,7 +11,7 @@ from app.schemas.execution import (
 from app.core.guardrail import check_prompt_injection
 from app.core.prompt_builder import build_prompt
 from app.core.execution_loop import run_execution_loop
-from app.core.llm import supported_models
+from app.core.llm import ProviderRejectedModel, supported_models
 from app.logger import get_logger
 
 logger = get_logger(__name__)
@@ -60,9 +60,17 @@ class ExecutionService:
         # Build structured prompt
         structured_prompt = build_prompt(agent, data.task)
 
-        result = run_execution_loop(
-            structured_prompt, agent, tenant_id, model=data.model
-        )
+        try:
+            result = run_execution_loop(
+                structured_prompt, agent, tenant_id, model=data.model
+            )
+        except ProviderRejectedModel as e:
+            # Configuration is wrong, not the request: say so plainly rather
+            # than letting the global handler return an opaque 500.
+            logger.error(f"Provider rejected the model | {e}")
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e)
+            )
 
         logger.info(
             f"Execution complete | agent={agent_id} "

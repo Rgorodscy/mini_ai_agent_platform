@@ -29,6 +29,18 @@ class UnsupportedModel(ValueError):
     """Raised for a model id no configured provider serves."""
 
 
+class ProviderRejectedModel(RuntimeError):
+    """
+    Raised when the provider itself does not recognise the model.
+
+    Distinct from UnsupportedModel: the deployment believes it can serve
+    this model, but the provider disagrees — almost always a GROQ_MODELS
+    entry that has since been retired from the provider's catalogue.
+    Without this, a stale config surfaced as a bare 500 and had to be
+    diagnosed from the container log.
+    """
+
+
 @dataclass(frozen=True)
 class Provider:
     name: str
@@ -115,4 +127,32 @@ def chat_completion(
         kwargs["tools"] = tools
         kwargs["tool_choice"] = tool_choice
 
-    return client.chat.completions.create(**kwargs)
+    try:
+        return client.chat.completions.create(**kwargs)
+    except Exception as e:
+        if _is_model_not_found(e):
+            logger.error(
+                f"Provider does not serve this model | "
+                f"provider={provider.name} model={model}"
+            )
+            raise ProviderRejectedModel(
+                f"Provider '{provider.name}' does not serve model "
+                f"'{model}'. The configured model list is out of date with "
+                f"the provider's catalogue."
+            ) from e
+        raise
+
+
+def _is_model_not_found(error: Exception) -> bool:
+    """
+    Detects a provider's "no such model" rejection.
+
+    Matched on the response payload rather than the SDK's exception class,
+    so this does not need a separate branch per provider.
+    """
+    status = getattr(error, "status_code", None)
+    if status not in (400, 404):
+        return False
+
+    text = str(error).lower()
+    return "model_not_found" in text or "does not exist" in text

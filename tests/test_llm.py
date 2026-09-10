@@ -4,6 +4,7 @@ from app.config import GROQ_MODEL
 from app.core import llm
 from app.core.llm import (
     Provider,
+    ProviderRejectedModel,
     UnsupportedModel,
     chat_completion,
     resolve_provider,
@@ -182,3 +183,71 @@ def test_api_rejects_a_model_it_cannot_serve(client, fake_llm):
 
     assert response.status_code == 400
     assert fake_llm.calls == []
+
+
+# --- Provider rejects a configured model ---
+
+
+class _NotFound(Exception):
+    status_code = 404
+
+    def __str__(self):
+        return (
+            "Error code: 404 - {'error': {'message': 'The model `x` does "
+            "not exist or you do not have access to it.', 'code': "
+            "'model_not_found'}}"
+        )
+
+
+def test_provider_model_not_found_is_translated(fake_llm, monkeypatch):
+    """
+    A model retired from the provider's catalogue must not surface as an
+    opaque 500 — diagnosing that meant reading container logs.
+    """
+
+    def reject(**kwargs):
+        raise _NotFound()
+
+    monkeypatch.setattr(fake_llm, "create", reject)
+
+    with pytest.raises(ProviderRejectedModel, match="does not serve model"):
+        chat_completion(model=GROQ_MODEL, messages=[])
+
+
+def test_other_provider_errors_are_not_swallowed(fake_llm, monkeypatch):
+    class _RateLimited(Exception):
+        status_code = 429
+
+    def reject(**kwargs):
+        raise _RateLimited("rate limit exceeded")
+
+    monkeypatch.setattr(fake_llm, "create", reject)
+
+    with pytest.raises(_RateLimited):
+        chat_completion(model=GROQ_MODEL, messages=[])
+
+
+def test_api_returns_502_when_the_provider_rejects_the_model(
+    client, fake_llm, monkeypatch
+):
+    def reject(**kwargs):
+        raise _NotFound()
+
+    monkeypatch.setattr(fake_llm, "create", reject)
+    agent = client.post(
+        "/agents",
+        json={
+            "name": "A",
+            "role": "assistant",
+            "description": "d",
+            "tools": [],
+        },
+    ).json()
+
+    response = client.post(
+        f"/agents/{agent['id']}/run",
+        json={"task": "hello", "model": GROQ_MODEL},
+    )
+
+    assert response.status_code == 502
+    assert "out of date" in response.json()["detail"]

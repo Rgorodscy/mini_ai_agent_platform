@@ -29,7 +29,10 @@ services:
       API_KEY_TENANT_B: ${API_KEY_TENANT_B:?set API_KEY_TENANT_B in .env}
       API_KEY_TENANT_C: ${API_KEY_TENANT_C:?set API_KEY_TENANT_C in .env}
       GROQ_API_KEY: ${GROQ_API_KEY:?set GROQ_API_KEY in .env}
-      GROQ_MODEL: ${GROQ_MODEL:-llama-3.3-70b-versatile}
+      # Both resolve to an empty string when not set in .env, and
+      # app.config treats empty as absent — so the default lives in the
+      # application, not duplicated across deployment manifests.
+      GROQ_MODEL: ${GROQ_MODEL:-}
       GROQ_MODELS: ${GROQ_MODELS:-}
       CHROMA_PATH: /data/chroma
     ports:

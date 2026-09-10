@@ -14,6 +14,18 @@ def _require(key: str) -> str:
     return value
 
 
+def _optional(key: str, default: str) -> str:
+    """
+    Reads an optional setting, treating an empty value as absent.
+
+    os.getenv returns "" for a variable that is set but empty, which is what
+    a compose file's `${VAR:-}` produces. Taking that literally would let an
+    unset compose variable override the default defined here, so the default
+    would have to be duplicated in every deployment manifest.
+    """
+    return (os.getenv(key) or "").strip() or default
+
+
 DATABASE_URL = _require("DATABASE_URL")
 MAX_EXECUTION_STEPS = int(os.getenv("MAX_EXECUTION_STEPS", "5"))
 API_KEYS: dict[str, str] = {
@@ -29,7 +41,12 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 # The default model, used wherever the platform calls an LLM on its own
 # behalf (query expansion, RAG answer generation) rather than on behalf of
 # a caller who named one.
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+#
+# Providers retire models, so any default here has a shelf life — this is
+# why the list below is configuration. To see what your account serves:
+#   python -c "from app.core.llm import _groq_client; \
+#       print([m.id for m in _groq_client().models.list().data])"
+GROQ_MODEL = _optional("GROQ_MODEL", "openai/gpt-oss-120b")
 
 
 def _model_list(key: str, default: str) -> tuple[str, ...]:
@@ -38,8 +55,13 @@ def _model_list(key: str, default: str) -> tuple[str, ...]:
 
     The catalogue a provider serves changes over time, so which models this
     deployment offers is configuration, not a hardcoded guess.
+
+    An empty value falls back to the default rather than meaning "no
+    models": os.getenv returns "" for a variable that is set but empty,
+    which is what a compose file passing `${GROQ_MODELS:-}` produces, and
+    taking that literally leaves the deployment unable to serve anything.
     """
-    raw = os.getenv(key, default)
+    raw = _optional(key, default)
     return tuple(m.strip() for m in raw.split(",") if m.strip())
 
 
@@ -47,11 +69,11 @@ GROQ_MODELS = _model_list("GROQ_MODELS", GROQ_MODEL)
 
 # --- RAG settings ---
 
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
-RERANKER_MODEL = os.getenv(
+EMBEDDING_MODEL = _optional("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+RERANKER_MODEL = _optional(
     "RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2"
 )
-CHROMA_PATH = os.getenv("CHROMA_PATH", "./chroma_db")
+CHROMA_PATH = _optional("CHROMA_PATH", "./chroma_db")
 
 
 def validate_settings() -> None:
@@ -64,3 +86,14 @@ def validate_settings() -> None:
     test and tooling contexts.
     """
     _require("GROQ_API_KEY")
+
+    # A deployment that can serve no model answers /health but rejects
+    # every run with a 400. Refuse to start instead: the misconfiguration
+    # belongs in the boot log, not in a confusing response body.
+    from app.core.llm import supported_models
+
+    if not supported_models():
+        raise RuntimeError(
+            "No LLM model is serveable: every provider is missing either "
+            "credentials or a model list. Check GROQ_API_KEY and GROQ_MODELS."
+        )
