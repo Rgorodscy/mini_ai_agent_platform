@@ -1,6 +1,6 @@
-# Two stages so the CUDA-enabled torch wheels never reach the final image:
-# installing CPU-only torch first keeps the image around 1.5GB instead of
-# roughly 4GB.
+# Two stages so the CUDA-enabled torch wheels never reach the final image.
+# Installing CPU-only torch first brings the built image to ~2GB; the CUDA
+# wheels alone are larger than that.
 FROM python:3.12-slim AS builder
 
 ENV PIP_NO_CACHE_DIR=1 \
@@ -48,7 +48,12 @@ COPY alembic.ini ./
 COPY alembic ./alembic
 COPY app ./app
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh
+# Strip CR as well as setting the exec bit: a checkout on Windows can carry
+# CRLF, and the kernel then reads the shebang as "/bin/sh\r" and the
+# container exits with "bad interpreter". .gitattributes guards the repo
+# side; this guards the build against any checkout.
+RUN sed -i 's/\r$//' /usr/local/bin/entrypoint.sh \
+    && chmod +x /usr/local/bin/entrypoint.sh
 
 # Non-root: the app writes only to the Chroma volume, mounted separately.
 RUN useradd --create-home --uid 1000 appuser \

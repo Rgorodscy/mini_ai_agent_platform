@@ -1,0 +1,15 @@
+# Normalize line endings so a clone on Windows produces files Linux can run.
+* text=auto eol=lf
+
+# These are executed inside the container. With CRLF the kernel reads the
+# shebang as "/bin/sh\r" and the container dies with "bad interpreter".
+*.sh text eol=lf
+docker/entrypoint.sh text eol=lf
+Dockerfile text eol=lf
+
+# Binary — never touch.
+*.png binary
+*.jpg binary
+*.pdf binary
+*.docx binary
+*.bin binary

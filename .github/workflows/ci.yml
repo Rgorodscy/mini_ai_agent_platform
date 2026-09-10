@@ -32,7 +32,7 @@ jobs:
         run: pip install -r requirements-dev.txt
 
       - name: Check formatting
-        run: black --check app tests
+        run: black --check app tests alembic
 
       - name: Run tests
         # The suite is hermetic — these values are never used against a
@@ -119,9 +119,11 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Verify the app starts and serves /health
+        # The container runs as non-root, so the SQLite file has to live on
+        # the writable /data volume, not in the root-owned workdir.
         run: |
           docker run -d --name api -p 8000:8000 \
-            -e DATABASE_URL=sqlite:///./ci.db \
+            -e DATABASE_URL=sqlite:////data/ci.db \
             -e API_KEY_TENANT_A=ci-a \
             -e API_KEY_TENANT_B=ci-b \
             -e API_KEY_TENANT_C=ci-c \

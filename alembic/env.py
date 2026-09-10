@@ -5,6 +5,7 @@ from sqlalchemy import pool
 
 from alembic import context
 
+from app.config import DATABASE_URL
 from app.database import Base
 from app.models import Agent, Tool, Execution
 
@@ -12,10 +13,23 @@ from app.models import Agent, Tool, Execution
 # access to the values within the .ini file in use.
 config = context.config
 
+# The application is the single source of truth for the database URL.
+# Without this, Alembic uses the hardcoded sqlalchemy.url in alembic.ini and
+# silently migrates a local SQLite file no matter what DATABASE_URL says —
+# so a Postgres deployment would start against an unmigrated database.
+#
+# The escaping matters: set_main_option runs the value through ConfigParser
+# interpolation, so a password containing '%' would otherwise raise.
+config.set_main_option("sqlalchemy.url", DATABASE_URL.replace("%", "%%"))
+
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
+
+# SQLite cannot ALTER COLUMN; batch mode makes Alembic emit the
+# create-copy-drop-rename dance instead of failing.
+RENDER_AS_BATCH = DATABASE_URL.startswith("sqlite")
 
 # add your model's MetaData object here
 # for 'autogenerate' support
@@ -47,6 +61,7 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        render_as_batch=RENDER_AS_BATCH,
     )
 
     with context.begin_transaction():
@@ -68,7 +83,9 @@ def run_migrations_online() -> None:
 
     with connectable.connect() as connection:
         context.configure(
-            connection=connection, target_metadata=target_metadata
+            connection=connection,
+            target_metadata=target_metadata,
+            render_as_batch=RENDER_AS_BATCH,
         )
 
         with context.begin_transaction():
