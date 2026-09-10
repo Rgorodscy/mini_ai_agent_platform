@@ -113,6 +113,21 @@ RERANKER_MODEL = _optional(
 CHROMA_PATH = _optional("CHROMA_PATH", "./chroma_db")
 
 
+def _flag(key: str, default: bool) -> bool:
+    raw = _optional(key, "true" if default else "false").lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+# Both stages cost real latency and, for expansion, an extra LLM call per
+# search. Which ones pay for themselves depends on the corpus, so they are
+# switches rather than assumptions — measure with evals/retrieval_eval.py
+# against your own documents before trusting either default.
+RAG_USE_EXPANSION = _flag("RAG_USE_EXPANSION", True)
+RAG_USE_RERANK = _flag("RAG_USE_RERANK", True)
+RAG_CANDIDATE_POOL = int(_optional("RAG_CANDIDATE_POOL", "10"))
+RAG_TOP_K = int(_optional("RAG_TOP_K", "3"))
+
+
 def validate_settings() -> None:
     """
     Fails fast on missing configuration at application startup.

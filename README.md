@@ -100,6 +100,48 @@ grouped while they stay above a similarity threshold, so a chunk breaks
 where the topic changes rather than at an arbitrary character count, with
 a recursive character-split fallback for oversized chunks.
 
+### Does the pipeline earn its cost?
+
+Expansion adds an LLM call per search; reranking runs a cross-encoder over
+every candidate. `evals/retrieval_eval.py` measures whether they pay for
+themselves, against 20 documents and 22 hand-labelled queries phrased the
+way a user would ask rather than by quoting the source.
+
+```bash
+docker compose exec api python -m evals.retrieval_eval
+```
+
+| configuration | recall@1 | recall@3 | MRR | seconds | LLM calls |
+| ------------- | -------- | -------- | ----- | ------- | --------- |
+| baseline      | 0.82     | 1.00     | 0.902 | 0.4     | 0         |
+| +expansion    | **0.91** | 0.95     | **0.943** | 19.7 | 22     |
+| +rerank       | 0.82     | 1.00     | 0.894 | 4.5     | 0         |
+| +both         | 0.82     | 1.00     | 0.894 | 48.4    | 22        |
+
+Two results worth reading carefully:
+
+**Expansion helps top-1** — 0.82 to 0.91 recall@1, MRR 0.902 to 0.943 — at
+roughly 50x the latency. Queries here use different vocabulary from the
+documents, which is exactly the gap expansion closes.
+
+**Reranking does not help, and cancels expansion's gain.** On its own it
+leaves recall unchanged and nudges MRR down. Combined with expansion it
+pulls MRR back to the un-expanded 0.894 while costing the most latency of
+any configuration. The shipped default (`+both`) is the worst trade in this
+table on this corpus.
+
+**These numbers do not generalise.** 22 queries is far too few for a 0.09
+recall difference — that is two queries — to be significant, and baseline
+recall@3 is already 1.00, so a 20-document corpus barely discriminates
+between configurations at all. The cross-encoder is also trained on web
+search passages, not handbook prose. The honest conclusion is narrower than
+the table looks: on *this* corpus reranking does not earn its latency, and
+the question is now answerable at all, which it was not before.
+
+Both stages are therefore switches, not assumptions — `RAG_USE_EXPANSION`
+and `RAG_USE_RERANK`. Run the harness against your own documents before
+trusting either default.
+
 ---
 
 ## Project structure
@@ -134,7 +176,8 @@ app/
         ├── pipeline.py       # Orchestration (answer_from_knowledge)
         └── utils.py          # Embedder & ChromaDB clients
 
-tests/                        # 290 tests, no network access
+tests/                        # 294 tests, no network access
+evals/                        # Retrieval quality harness
 alembic/                      # Database migrations
 .github/workflows/ci.yml      # Tests, migrations, image build
 Dockerfile                    # Multi-stage, CPU-only torch, non-root
@@ -217,7 +260,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-290 tests, ~30 seconds, **91% coverage**.
+294 tests, ~25 seconds, **91% coverage**.
 
 The suite is hermetic: an autouse fixture in `tests/conftest.py` replaces
 the LLM client, the embedding model and the cross-encoder with fakes for
@@ -536,9 +579,10 @@ anything else is logged and dropped at execution time rather than
 rejected at creation. Creating a tool named `web-search` (with a hyphen)
 produces an agent whose tool never runs, with no error at creation time.
 
-**RAG has no evaluation harness.** Query expansion and reranking are
-implemented but their contribution to retrieval quality is not measured.
-There are no recall@k numbers to justify the added latency and cost.
+**The eval set is too small to generalise.** `evals/` measures retrieval
+quality, but 20 documents and 22 queries cannot separate configurations
+whose recall@3 is already 1.00. The harness is real; the numbers are
+indicative, not a benchmark. A larger labelled set is the obvious next step.
 
 **No price table is bundled.** Token counts, latency and per-model usage
 are recorded on every execution and aggregated by `GET /usage`, but

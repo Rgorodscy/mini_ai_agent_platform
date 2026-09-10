@@ -47,6 +47,10 @@ CrossEncoder('${RERANKER_MODEL}')" \
 COPY alembic.ini ./
 COPY alembic ./alembic
 COPY app ./app
+# The retrieval eval ships with the image: it needs the real embedding and
+# reranker weights, which are already baked in here.
+#   docker compose exec api python -m evals.retrieval_eval
+COPY evals ./evals
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 # Strip CR as well as setting the exec bit: a checkout on Windows can carry
 # CRLF, and the kernel then reads the shebang as "/bin/sh\r" and the

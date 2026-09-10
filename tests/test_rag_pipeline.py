@@ -170,3 +170,68 @@ def test_pipeline_survives_a_failed_expansion(fake_llm):
     )
 
     assert answer_from_knowledge("refunds", "t1") == "Within 30 days."
+
+
+# --- Stage toggles ---
+#
+# Whether expansion and reranking earn their latency depends on the corpus
+# (see evals/retrieval_eval.py), so both are switchable. These verify the
+# switches actually bypass the stage rather than just logging differently.
+
+
+def test_expansion_can_be_disabled(fake_llm, monkeypatch):
+    monkeypatch.setattr("app.core.rag.pipeline.RAG_USE_EXPANSION", False)
+    ingest("Refunds within 30 days.", tenant_id="t1", doc_id="policy")
+    fake_llm.queue(make_llm_response(content="Within 30 days."))
+
+    answer_from_knowledge("refunds", "t1")
+
+    # One call for the answer, none for expansion.
+    assert len(fake_llm.calls) == 1
+
+
+def test_rerank_can_be_disabled(monkeypatch, fake_llm):
+    monkeypatch.setattr("app.core.rag.pipeline.RAG_USE_RERANK", False)
+
+    called = []
+    monkeypatch.setattr(
+        "app.core.rag.pipeline.rerank",
+        lambda *a, **kw: called.append(a) or [],
+    )
+    ingest("Refunds within 30 days.", tenant_id="t1", doc_id="policy")
+    fake_llm.queue(
+        json_response('["refunds"]'),
+        make_llm_response(content="Within 30 days."),
+    )
+
+    answer_from_knowledge("refunds", "t1")
+
+    assert called == []
+
+
+def test_top_k_limits_context_without_rerank(monkeypatch, fake_llm):
+    monkeypatch.setattr("app.core.rag.pipeline.RAG_USE_RERANK", False)
+    monkeypatch.setattr("app.core.rag.pipeline.RAG_TOP_K", 1)
+
+    for i in range(5):
+        ingest(
+            f"Unrelated document number {i}.", tenant_id="t1", doc_id=f"d{i}"
+        )
+    fake_llm.queue(
+        json_response('["query"]'),
+        make_llm_response(content="Answer."),
+    )
+
+    answer_from_knowledge("document", "t1")
+
+    system_prompt = fake_llm.calls[-1]["messages"][0]["content"]
+    assert system_prompt.count("Unrelated document number") == 1
+
+
+def test_both_stages_disabled_still_answers(monkeypatch, fake_llm):
+    monkeypatch.setattr("app.core.rag.pipeline.RAG_USE_EXPANSION", False)
+    monkeypatch.setattr("app.core.rag.pipeline.RAG_USE_RERANK", False)
+    ingest("Refunds within 30 days.", tenant_id="t1", doc_id="policy")
+    fake_llm.queue(make_llm_response(content="Within 30 days."))
+
+    assert answer_from_knowledge("refunds", "t1") == "Within 30 days."

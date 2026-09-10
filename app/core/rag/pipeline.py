@@ -1,4 +1,10 @@
-from app.config import GROQ_MODEL
+from app.config import (
+    GROQ_MODEL,
+    RAG_CANDIDATE_POOL,
+    RAG_TOP_K,
+    RAG_USE_EXPANSION,
+    RAG_USE_RERANK,
+)
 from app.core.llm import chat_completion
 from app.core.rag.query_expander import expand_query
 from app.core.rag.reranker import rerank
@@ -24,18 +30,22 @@ def answer_from_knowledge(query: str, tenant_id: str) -> str:
     """
     Answers a query from the tenant's knowledge base.
 
-    Retrieval is widened by query expansion, then narrowed by a
-    cross-encoder rerank before the surviving chunks are handed to the
-    model as grounding context.
+    Retrieval widens the candidate set; reranking narrows it. Both stages
+    are optional (see config.RAG_USE_EXPANSION / RAG_USE_RERANK) because
+    whether they earn their latency depends on the corpus — measure with
+    evals/retrieval_eval.py rather than assuming.
     """
-    expanded_queries = expand_query(query)
+    if RAG_USE_EXPANSION:
+        queries = expand_query(query)
+    else:
+        queries = [query]
 
-    # dict.fromkeys preserves first-seen order while deduplicating chunks
-    # that several query variations retrieved in common.
+    # dict.fromkeys semantics: preserve first-seen order while deduplicating
+    # chunks that several query variations retrieved in common.
     seen: dict[str, None] = {}
-    for expanded in expanded_queries:
+    for expanded in queries:
         for chunk in retrieve(
-            query=expanded, tenant_id=tenant_id, n_results=10
+            query=expanded, tenant_id=tenant_id, n_results=RAG_CANDIDATE_POOL
         ):
             seen.setdefault(chunk, None)
 
@@ -44,11 +54,15 @@ def answer_from_knowledge(query: str, tenant_id: str) -> str:
         logger.info(f"RAG no candidates | tenant={tenant_id}")
         return NO_RESULTS
 
-    top_chunks = rerank(query, candidates)
+    if RAG_USE_RERANK:
+        top_chunks = rerank(query, candidates, top_k=RAG_TOP_K)
+    else:
+        top_chunks = candidates[:RAG_TOP_K]
 
     logger.info(
         f"RAG context built | tenant={tenant_id} "
-        f"variations={len(expanded_queries)} candidates={len(candidates)} "
+        f"expansion={RAG_USE_EXPANSION} rerank={RAG_USE_RERANK} "
+        f"variations={len(queries)} candidates={len(candidates)} "
         f"kept={len(top_chunks)}"
     )
 
