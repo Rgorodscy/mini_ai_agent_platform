@@ -1,0 +1,145 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install CPU-only torch
+        # sentence-transformers would otherwise pull the CUDA wheels —
+        # several GB of download for a runner with no GPU.
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Check formatting
+        run: black --check app tests
+
+      - name: Run tests
+        # The suite is hermetic — these values are never used against a
+        # real service, they only satisfy the startup configuration check.
+        env:
+          DATABASE_URL: sqlite:///./test.db
+          API_KEY_TENANT_A: ci-key-tenant-a
+          API_KEY_TENANT_B: ci-key-tenant-b
+          API_KEY_TENANT_C: ci-key-tenant-c
+          GROQ_API_KEY: ci-not-a-real-key
+        run: pytest --cov=app --cov-report=term-missing --cov-report=xml
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.xml
+          if-no-files-found: ignore
+
+  migrations:
+    # Proves the migrations apply to Postgres, not just to the SQLite used
+    # in development — the two disagree on ALTER COLUMN.
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: agent
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: agent_platform
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U agent -d agent_platform"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install migration dependencies
+        # Alembic only needs the ORM models, not the RAG stack.
+        run: pip install alembic SQLAlchemy "psycopg[binary]>=3.2,<4" python-dotenv
+
+      - name: Apply migrations
+        env:
+          DATABASE_URL: postgresql+psycopg://agent:ci@localhost:5432/agent_platform
+          API_KEY_TENANT_A: ci-a
+          API_KEY_TENANT_B: ci-b
+          API_KEY_TENANT_C: ci-c
+        run: alembic upgrade head
+
+      - name: Check for undefined downgrade paths
+        env:
+          DATABASE_URL: postgresql+psycopg://agent:ci@localhost:5432/agent_platform
+          API_KEY_TENANT_A: ci-a
+          API_KEY_TENANT_B: ci-b
+          API_KEY_TENANT_C: ci-c
+        run: alembic downgrade base
+
+  docker:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: mini-agent-platform:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Verify the app starts and serves /health
+        run: |
+          docker run -d --name api -p 8000:8000 \
+            -e DATABASE_URL=sqlite:///./ci.db \
+            -e API_KEY_TENANT_A=ci-a \
+            -e API_KEY_TENANT_B=ci-b \
+            -e API_KEY_TENANT_C=ci-c \
+            -e GROQ_API_KEY=ci-not-a-real-key \
+            mini-agent-platform:ci
+
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8000/health; then
+              echo "healthy"
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "Container never became healthy. Logs:"
+          docker logs api
+          exit 1
+
+      - name: Container logs
+        if: always()
+        run: docker logs api || true

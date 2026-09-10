@@ -22,30 +22,36 @@ API_KEYS: dict[str, str] = {
     _require("API_KEY_TENANT_C"): "tenant_c",
 }
 
-# --- LLM / RAG settings ---
+# --- LLM settings ---
 
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+
+# The default model, used wherever the platform calls an LLM on its own
+# behalf (query expansion, RAG answer generation) rather than on behalf of
+# a caller who named one.
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+
+
+def _model_list(key: str, default: str) -> tuple[str, ...]:
+    """
+    Reads a comma-separated model list from the environment.
+
+    The catalogue a provider serves changes over time, so which models this
+    deployment offers is configuration, not a hardcoded guess.
+    """
+    raw = os.getenv(key, default)
+    return tuple(m.strip() for m in raw.split(",") if m.strip())
+
+
+GROQ_MODELS = _model_list("GROQ_MODELS", GROQ_MODEL)
+
+# --- RAG settings ---
+
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
 RERANKER_MODEL = os.getenv(
     "RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2"
 )
 CHROMA_PATH = os.getenv("CHROMA_PATH", "./chroma_db")
-
-SUPPORTED_MODELS = [GROQ_MODEL]
-
-
-@lru_cache(maxsize=1)
-def get_groq_client():
-    """
-    Lazily builds the Groq client.
-
-    Built on first use rather than at import time so that importing the
-    application never requires network access or an API key — tests stub
-    this out entirely.
-    """
-    from groq import Groq
-
-    return Groq(api_key=_require("GROQ_API_KEY"))
 
 
 def validate_settings() -> None:

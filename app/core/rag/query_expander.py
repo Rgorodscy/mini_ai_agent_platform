@@ -1,7 +1,8 @@
 import json
 import re
 
-from app.config import GROQ_MODEL, get_groq_client
+from app.config import GROQ_MODEL
+from app.core.llm import chat_completion
 from app.logger import get_logger
 
 logger = get_logger(__name__)
@@ -22,7 +23,7 @@ def expand_query(query: str) -> list[str]:
     degrades recall but must never fail the search.
     """
     try:
-        res = get_groq_client().chat.completions.create(
+        res = chat_completion(
             model=GROQ_MODEL,
             messages=[
                 {"role": "system", "content": EXPAND_PROMPT},

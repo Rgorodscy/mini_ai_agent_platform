@@ -1,7 +1,7 @@
 from .indexer import ingest
-from .rag_pipeline import rag_pipeline
+from .pipeline import answer_from_knowledge
 
 __all__ = [
     "ingest",
-    "rag_pipeline",
+    "answer_from_knowledge",
 ]

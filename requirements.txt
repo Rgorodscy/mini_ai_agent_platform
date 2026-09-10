@@ -11,6 +11,10 @@ python-dotenv==1.2.2
 # --- Persistence ---
 SQLAlchemy==2.0.48
 alembic==1.18.4
+# Postgres driver, used by the Docker setup. Range rather than an exact pin
+# because it is not installed in the local SQLite development environment,
+# so no exact version has been verified here.
+psycopg[binary]>=3.2,<4
 
 # --- LLM / agent orchestration ---
 groq==1.1.2

@@ -1,0 +1,172 @@
+from app.core.rag.indexer import ingest
+from app.core.rag.pipeline import NO_RESULTS, answer_from_knowledge
+from app.core.rag.query_expander import expand_query
+from app.core.rag.reranker import rerank
+from tests.conftest import make_llm_response
+
+
+def json_response(payload: str):
+    """An LLM reply whose content is raw text (used for the JSON array)."""
+    return make_llm_response(content=payload)
+
+
+# --- Query expansion ---
+
+
+def test_expansion_parses_a_json_array(fake_llm):
+    fake_llm.queue(json_response('["refund policy", "returns", "money back"]'))
+
+    assert expand_query("refund policy") == [
+        "refund policy",
+        "returns",
+        "money back",
+    ]
+
+
+def test_expansion_always_includes_the_original_query(fake_llm):
+    fake_llm.queue(json_response('["returns", "money back"]'))
+
+    assert expand_query("refund policy")[0] == "refund policy"
+
+
+def test_expansion_strips_markdown_fences(fake_llm):
+    """The model adds ```json fences despite being told not to."""
+    fake_llm.queue(json_response('```json\n["a", "b"]\n```'))
+
+    assert expand_query("a") == ["a", "b"]
+
+
+def test_expansion_falls_back_on_unparseable_output(fake_llm):
+    fake_llm.queue(json_response("Sure! Here are some variations: a, b, c"))
+
+    assert expand_query("original") == ["original"]
+
+
+def test_expansion_falls_back_on_wrong_json_shape(fake_llm):
+    fake_llm.queue(json_response('{"queries": ["a", "b"]}'))
+
+    assert expand_query("original") == ["original"]
+
+
+def test_expansion_drops_non_string_items(fake_llm):
+    fake_llm.queue(json_response('["valid", 42, null, "  ", "also valid"]'))
+
+    assert expand_query("q") == ["q", "valid", "also valid"]
+
+
+def test_expansion_falls_back_when_the_llm_raises(fake_llm, monkeypatch):
+    def boom(**kwargs):
+        raise RuntimeError("provider down")
+
+    monkeypatch.setattr(fake_llm, "create", boom)
+
+    assert expand_query("original") == ["original"]
+
+
+def test_expansion_never_loses_the_query_on_empty_output(fake_llm):
+    fake_llm.queue(json_response(""))
+
+    assert expand_query("original") == ["original"]
+
+
+# --- Reranking ---
+
+
+def test_rerank_orders_by_relevance():
+    chunks = [
+        "completely unrelated content here",
+        "the refund policy explained",
+        "somewhat about refund",
+    ]
+
+    result = rerank("refund policy", chunks, top_k=3)
+
+    assert result[0] == "the refund policy explained"
+
+
+def test_rerank_limits_to_top_k():
+    chunks = [f"chunk number {i}" for i in range(10)]
+
+    assert len(rerank("chunk", chunks, top_k=3)) == 3
+
+
+def test_rerank_handles_empty_context():
+    assert rerank("anything", []) == []
+
+
+def test_rerank_handles_fewer_chunks_than_top_k():
+    assert len(rerank("q", ["only one chunk"], top_k=5)) == 1
+
+
+# --- Full pipeline ---
+
+
+def test_pipeline_returns_no_results_when_nothing_is_indexed(fake_llm):
+    fake_llm.queue(json_response('["anything"]'))
+
+    assert answer_from_knowledge("anything", "empty-tenant") == NO_RESULTS
+
+
+def test_pipeline_does_not_call_the_llm_for_an_answer_when_empty(fake_llm):
+    fake_llm.queue(json_response('["anything"]'))
+
+    answer_from_knowledge("anything", "empty-tenant")
+
+    # One call for expansion, none for generation.
+    assert len(fake_llm.calls) == 1
+
+
+def test_pipeline_grounds_the_answer_in_retrieved_chunks(fake_llm):
+    ingest(
+        "The refund policy allows returns within 30 days.",
+        tenant_id="t1",
+        doc_id="policy",
+    )
+    fake_llm.queue(
+        json_response('["refund policy"]'),
+        make_llm_response(content="Returns are accepted within 30 days."),
+    )
+
+    answer = answer_from_knowledge("refund policy", "t1")
+
+    assert answer == "Returns are accepted within 30 days."
+
+    # The generation call must carry the retrieved chunk as context.
+    generation_call = fake_llm.calls[-1]
+    system_prompt = generation_call["messages"][0]["content"]
+    assert "30 days" in system_prompt
+
+
+def test_pipeline_deduplicates_chunks_across_query_variations(fake_llm):
+    """
+    Every variation retrieves from the same small collection, so the same
+    chunks come back repeatedly — they must reach the reranker once each.
+    """
+    ingest("Only one chunk of text here.", tenant_id="t1", doc_id="one")
+    fake_llm.queue(
+        json_response('["a", "b", "c", "d"]'),
+        make_llm_response(content="Answer."),
+    )
+
+    answer_from_knowledge("query", "t1")
+
+    system_prompt = fake_llm.calls[-1]["messages"][0]["content"]
+    assert system_prompt.count("Only one chunk of text here.") == 1
+
+
+def test_pipeline_is_tenant_scoped(fake_llm):
+    ingest("Tenant A secret.", tenant_id="tenant_a", doc_id="secret")
+    fake_llm.queue(json_response('["secret"]'))
+
+    assert answer_from_knowledge("secret", "tenant_b") == NO_RESULTS
+
+
+def test_pipeline_survives_a_failed_expansion(fake_llm):
+    """A broken expansion degrades recall; it must not fail the search."""
+    ingest("Refunds within 30 days.", tenant_id="t1", doc_id="policy")
+    fake_llm.queue(
+        json_response("not json at all"),
+        make_llm_response(content="Within 30 days."),
+    )
+
+    assert answer_from_knowledge("refunds", "t1") == "Within 30 days."

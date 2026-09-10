@@ -11,7 +11,7 @@ from app.schemas.execution import (
 from app.core.guardrail import check_prompt_injection
 from app.core.prompt_builder import build_prompt
 from app.core.execution_loop import run_execution_loop
-from app.config import SUPPORTED_MODELS
+from app.core.llm import supported_models
 from app.logger import get_logger
 
 logger = get_logger(__name__)
@@ -30,7 +30,8 @@ class ExecutionService:
             f"model={data.model}"
         )
 
-        if data.model not in SUPPORTED_MODELS:
+        available = supported_models()
+        if data.model not in available:
             logger.warning(
                 f"Unsupported model requested | model={data.model} "
                 f"tenant={tenant_id}"
@@ -39,7 +40,7 @@ class ExecutionService:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=(
                     f"Unsupported model '{data.model}'. "
-                    f"Supported: {SUPPORTED_MODELS}"
+                    f"Supported: {available}"
                 ),
             )
 
@@ -59,7 +60,9 @@ class ExecutionService:
         # Build structured prompt
         structured_prompt = build_prompt(agent, data.task)
 
-        result = run_execution_loop(structured_prompt, agent, tenant_id)
+        result = run_execution_loop(
+            structured_prompt, agent, tenant_id, model=data.model
+        )
 
         logger.info(
             f"Execution complete | agent={agent_id} "

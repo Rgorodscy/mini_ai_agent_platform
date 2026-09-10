@@ -7,6 +7,13 @@ calls a real LLM, executes tools, and records a full audit trail.
 
 Built with FastAPI, SQLAlchemy, LangGraph, Groq and ChromaDB.
 
+![CI](https://github.com/rgorodscy/mini_agent_platform/actions/workflows/ci.yml/badge.svg)
+
+```bash
+cp .env.example .env   # add your GROQ_API_KEY
+docker compose up
+```
+
 ---
 
 ## Table of Contents
@@ -111,6 +118,7 @@ app/
 ├── routers/                  # HTTP endpoints
 └── core/                     # Agent execution — no HTTP, no DB
     ├── execution_loop.py     # LangGraph state machine
+    ├── llm.py                # Provider registry and routing
     ├── guardrail.py          # Injection detection
     ├── prompt_builder.py     # Structured prompt assembly
     ├── safe_math.py          # AST-based arithmetic evaluator
@@ -122,16 +130,35 @@ app/
         ├── retriever.py      # Vector search
         ├── query_expander.py # Query rewriting
         ├── reranker.py       # Cross-encoder reranking
-        ├── rag_pipeline.py   # Orchestration
+        ├── pipeline.py       # Orchestration (answer_from_knowledge)
         └── utils.py          # Embedder & ChromaDB clients
 
-tests/                        # 167 tests, no network access
+tests/                        # 247 tests, no network access
 alembic/                      # Database migrations
+.github/workflows/ci.yml      # Tests, migrations, image build
+Dockerfile                    # Multi-stage, CPU-only torch, non-root
+docker-compose.yml            # API + Postgres + persistent volumes
 ```
 
 ---
 
 ## Setup
+
+### With Docker (recommended)
+
+Brings up Postgres and the API, applies migrations on boot, and bakes the
+embedding and reranking weights into the image so the first knowledge
+search does not block on a download:
+
+```bash
+cp .env.example .env     # fill in GROQ_API_KEY and the tenant keys
+docker compose up --build
+```
+
+The API is on `http://localhost:8000`, docs on `/docs`. The vector store
+lives in a named volume, so it survives `docker compose down`.
+
+### Without Docker
 
 ### Requirements
 
@@ -189,17 +216,21 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-167 tests, ~10 seconds, **75% coverage**.
+247 tests, ~20 seconds, **90% coverage**.
 
 The suite is hermetic: an autouse fixture in `tests/conftest.py` replaces
-the Groq client, the embedding model and the cross-encoder with fakes for
+the LLM client, the embedding model and the cross-encoder with fakes for
 every test. No test can reach the network or spend money — a test that
 forgets to stub the LLM gets a canned response rather than a real call.
 Each test also gets its own database and its own vector store.
 
-Coverage is concentrated in the API and agent-execution layers. The RAG
-pipeline is currently exercised only indirectly — see
-[Known limitations](#known-limitations).
+ChromaDB, pypdf and python-docx are **not** faked. Retrieval runs against
+a real vector store in a temporary directory, and the PDF and DOCX
+fixtures are real files built in memory, so parsing, collection naming,
+upsert semantics and tenant scoping are exercised rather than mocked away.
+
+CI additionally applies the migrations against a real Postgres service and
+builds the Docker image, then checks the container answers `/health`.
 
 ---
 
@@ -377,6 +408,11 @@ exposes `detect_injection` (pure) separately from `check_prompt_injection`
 execution loop, which needs to block one tool call without failing the
 whole request.
 
+**The advertised model list is derived, not declared.** `supported_models()`
+is computed from the providers that have credentials configured, so the API
+can never advertise a model it would fail to call — and the `model` on an
+execution row is the model that actually ran.
+
 **Execution history as structured JSON.** Each run stores the structured
 prompt, every step with tool inputs and outputs, and the final response —
 full auditability of what the agent actually did.
@@ -423,11 +459,11 @@ known phrasings, not novel ones.
 
 ## Known limitations
 
-**The `model` parameter is not a model selector.** The API accepts and
-records the model name, but execution always uses the configured
-`GROQ_MODEL`. `SUPPORTED_MODELS` is therefore derived from it, so the
-recorded value is at least truthful. Real multi-provider support needs an
-adapter layer.
+**Only one provider is implemented.** `core/llm.py` defines the provider
+registry and routing, but Groq is the only adapter. Adding OpenAI or
+Anthropic means writing an adapter and a registry entry — and translating
+to and from the OpenAI chat-completions shape this codebase assumes, which
+not every provider SDK speaks natively.
 
 **Tools with no implementation are silently skipped.** `POST /tools`
 accepts any `name`, but only names in `TOOL_REGISTRY` become callable —
@@ -448,9 +484,10 @@ agent run can hold a worker thread for tens of seconds. The RAG pipeline
 makes one LLM call for expansion, N retrievals, a rerank and a final call,
 all blocking, with no caching.
 
-**SQLite.** Limited concurrent writes, and no `ALTER COLUMN` support in
-migrations. Switching to PostgreSQL only requires changing `DATABASE_URL`
-and installing the driver — the engine already adapts its connect args.
+**SQLite in local development.** Limited concurrent writes, and no
+`ALTER COLUMN` support in migrations. The Docker setup runs Postgres, and
+CI applies the migrations against Postgres on every push, so the two stay
+in step — but local development still defaults to SQLite.
 
 **API keys in environment variables.** Fine for three fixed tenants,
 wrong for real tenancy: no rotation, no revocation, no per-tenant limits.

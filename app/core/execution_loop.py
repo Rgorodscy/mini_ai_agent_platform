@@ -4,8 +4,9 @@ from typing import Annotated, Any, TypedDict
 
 from langgraph.graph import END, StateGraph
 
-from app.config import GROQ_MODEL, MAX_EXECUTION_STEPS, get_groq_client
+from app.config import GROQ_MODEL, MAX_EXECUTION_STEPS
 from app.core.guardrail import detect_injection
+from app.core.llm import chat_completion
 from app.core.tool_implementations import TOOL_REGISTRY
 from app.logger import get_logger
 from app.models.agent import Agent
@@ -25,6 +26,7 @@ class ExecutionState(TypedDict):
     consecutive_errors: int
     force_text: bool
     max_steps: int
+    model: str
 
 
 def _build_tools_for_agent(
@@ -102,8 +104,8 @@ def call_model(state: ExecutionState) -> dict:
     tool_choice = "none" if state.get("force_text") else "auto"
 
     def _call(choice):
-        return get_groq_client().chat.completions.create(
-            model=GROQ_MODEL,
+        return chat_completion(
+            model=state["model"],
             messages=state["messages"],
             tools=state["active_tools"],
             tool_choice=choice,
@@ -312,12 +314,18 @@ _agent_graph = _build_graph()
 
 
 def run_execution_loop(
-    prompt: dict, agent: Agent, tenant_id: str = ""
+    prompt: dict,
+    agent: Agent,
+    tenant_id: str = "",
+    model: str = GROQ_MODEL,
 ) -> dict:
     """
     Runs the multi-step agent execution loop:
     call the model, execute any tool it asks for, feed the results back,
     and repeat until it answers in plain text or the step budget runs out.
+
+    `model` is the model the caller asked for; it is resolved to a provider
+    by core.llm, so what runs is what the execution row records.
 
     Returns {"steps", "final_response", "status"}.
     """
@@ -337,10 +345,11 @@ def run_execution_loop(
         "consecutive_errors": 0,
         "force_text": False,
         "max_steps": MAX_EXECUTION_STEPS,
+        "model": model,
     }
 
     logger.info(
-        f"Execution started | agent={agent.name} "
+        f"Execution started | agent={agent.name} model={model} "
         f"tools={[t['function']['name'] for t in active_tools]}"
     )
 

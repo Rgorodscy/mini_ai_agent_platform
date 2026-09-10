@@ -15,7 +15,7 @@ async def extract_text_from_file(file: UploadFile) -> str:
 
     if content_type not in SUPPORTED_CONTENT_TYPES:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Unsupported file type '{content_type}'. Accepted: pdf, docx, txt.",
         )
 

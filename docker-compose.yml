@@ -1,0 +1,43 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: agent
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agent-local-dev}
+      POSTGRES_DB: agent_platform
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agent -d agent_platform"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    # Not published by default: the API reaches it over the compose
+    # network. Uncomment to inspect the database from the host.
+    # ports:
+    #   - "5432:5432"
+
+  api:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://agent:${POSTGRES_PASSWORD:-agent-local-dev}@db:5432/agent_platform
+      MAX_EXECUTION_STEPS: ${MAX_EXECUTION_STEPS:-5}
+      API_KEY_TENANT_A: ${API_KEY_TENANT_A:?set API_KEY_TENANT_A in .env}
+      API_KEY_TENANT_B: ${API_KEY_TENANT_B:?set API_KEY_TENANT_B in .env}
+      API_KEY_TENANT_C: ${API_KEY_TENANT_C:?set API_KEY_TENANT_C in .env}
+      GROQ_API_KEY: ${GROQ_API_KEY:?set GROQ_API_KEY in .env}
+      GROQ_MODEL: ${GROQ_MODEL:-llama-3.3-70b-versatile}
+      GROQ_MODELS: ${GROQ_MODELS:-}
+      CHROMA_PATH: /data/chroma
+    ports:
+      - "8000:8000"
+    volumes:
+      # The vector store must outlive the container — it is not in Postgres.
+      - chroma_data:/data/chroma
+
+volumes:
+  postgres_data:
+  chroma_data:

@@ -134,15 +134,18 @@ def semantic_chunk(
     if current_chunk:
         chunks.append(" ".join(current_chunk))
 
-    # Recursively split oversized chunks
+    # Split oversized chunks structurally rather than semantically.
+    #
+    # Recursing into semantic_chunk here does not terminate: a chunk that
+    # is a single sentence longer than max_length splits into itself every
+    # time. Extracted PDF text hits this regularly — tables, slides and
+    # bullet lists often carry no sentence punctuation at all.
+    # recursive_chunk ends in a hard character split, so it always makes
+    # progress.
     final_chunks = []
     for chunk in chunks:
         if len(chunk) > max_length:
-            final_chunks.extend(
-                semantic_chunk(
-                    chunk, embed_fn, max_length, similarity_threshold
-                )
-            )
+            final_chunks.extend(recursive_chunk(chunk, max_length))
         else:
             final_chunks.append(chunk)
 

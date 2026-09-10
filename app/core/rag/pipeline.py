@@ -1,4 +1,5 @@
-from app.config import GROQ_MODEL, get_groq_client
+from app.config import GROQ_MODEL
+from app.core.llm import chat_completion
 from app.core.rag.query_expander import expand_query
 from app.core.rag.reranker import rerank
 from app.core.rag.retriever import retrieve
@@ -19,7 +20,7 @@ Relevant chunks:
 NO_RESULTS = "No relevant document found in the knowledge base."
 
 
-def rag_pipeline(query: str, tenant_id: str) -> str:
+def answer_from_knowledge(query: str, tenant_id: str) -> str:
     """
     Answers a query from the tenant's knowledge base.
 
@@ -53,7 +54,7 @@ def rag_pipeline(query: str, tenant_id: str) -> str:
 
     context = "\n\n".join(top_chunks)
 
-    res = get_groq_client().chat.completions.create(
+    res = chat_completion(
         model=GROQ_MODEL,
         messages=[
             {"role": "system", "content": RAG_PROMPT.format(context=context)},

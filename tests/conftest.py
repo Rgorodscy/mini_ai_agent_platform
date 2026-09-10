@@ -12,7 +12,6 @@ Two rules hold for the whole suite:
 """
 
 import os
-from importlib import import_module
 
 import pytest
 
@@ -176,14 +175,14 @@ def no_network(monkeypatch, tmp_path):
     Caches are cleared around each test so a lazily-loaded real model can
     never leak from one test into the next.
     """
-    from app.config import get_groq_client
+    from app.core import llm as llm_module
     from app.core.rag import reranker as reranker_module
     from app.core.rag import utils as rag_utils
 
     # Held by reference: monkeypatch replaces the module attributes below,
     # so teardown could no longer reach the real cached functions.
     cached = (
-        get_groq_client,
+        llm_module._client_for,
         rag_utils.get_embedder,
         rag_utils.get_chroma_client,
         reranker_module.get_reranker,
@@ -209,20 +208,12 @@ def no_network(monkeypatch, tmp_path):
     def _fake_client():
         return fake_groq
 
-    monkeypatch.setattr("app.config.get_groq_client", _fake_client)
-
-    # Modules that did `from app.config import get_groq_client` hold their
-    # own reference, so each one has to be patched where it is bound.
-    # import_module is needed for rag_pipeline: the rag package exports a
-    # function of the same name, which shadows the module attribute.
-    for module_name in (
-        "app.core.execution_loop",
-        "app.core.rag.rag_pipeline",
-        "app.core.rag.query_expander",
-    ):
-        monkeypatch.setattr(
-            import_module(module_name), "get_groq_client", _fake_client
-        )
+    # Every LLM call in the app goes through core.llm, so faking the
+    # provider client there covers the execution loop and the RAG pipeline
+    # at once. The adapter's own routing still runs for real.
+    monkeypatch.setattr(
+        llm_module, "_client_for", lambda provider_name: fake_groq
+    )
 
     yield fake_groq
 

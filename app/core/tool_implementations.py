@@ -32,10 +32,10 @@ def make_search_knowledge(tenant_id: str):
     """
 
     def search_knowledge(query: str) -> str:
-        from app.core.rag import rag_pipeline
+        from app.core.rag import answer_from_knowledge
 
         try:
-            results = rag_pipeline(query, tenant_id)
+            results = answer_from_knowledge(query, tenant_id)
             if not results:
                 return f"No results found for: '{query}'"
             return f"Relevant knowledge for '{query}':\n\n{results}"
