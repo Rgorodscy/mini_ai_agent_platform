@@ -16,7 +16,7 @@ class ExecutionRepository:
         structured_prompt: dict,
         steps: list,
         final_response: str | None,
-        status: str
+        status: str,
     ) -> Execution:
         execution = Execution(
             tenant_id=tenant_id,
@@ -26,7 +26,7 @@ class ExecutionRepository:
             structured_prompt=structured_prompt,
             steps=steps,
             final_response=final_response,
-            status=status
+            status=status,
         )
         self.db.add(execution)
         self.db.commit()
@@ -34,15 +34,14 @@ class ExecutionRepository:
         return execution
 
     def get_by_agent(
-            self, agent_id: str,
-            tenant_id: str,
-            page: int = 1,
-            size: int = 10) -> tuple[list[Execution], int]:
+        self, agent_id: str, tenant_id: str, page: int = 1, size: int = 10
+    ) -> tuple[list[Execution], int]:
         query = (
             self.db.query(Execution)
             .filter(
                 Execution.agent_id == agent_id,
-                Execution.tenant_id == tenant_id)
+                Execution.tenant_id == tenant_id,
+            )
             .order_by(Execution.created_at.desc())
         )
         total = query.count()

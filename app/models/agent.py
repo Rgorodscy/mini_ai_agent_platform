@@ -22,9 +22,9 @@ class Agent(Base):
     description = Column(String, nullable=False)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(
-        DateTime, server_default=func.now(), onupdate=func.now())
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
 
     tools = relationship(
-        "Tool",
-        secondary=agent_tools,
-        back_populates="agents")
+        "Tool", secondary=agent_tools, back_populates="agents"
+    )

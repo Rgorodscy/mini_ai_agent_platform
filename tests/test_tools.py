@@ -2,10 +2,13 @@ from app.middleware.auth import get_tenant
 
 
 def test_create_tool(client):
-    response = client.post("/tools", json={
-        "name": "Test Tool",
-        "description": "A tool for testing",
-    })
+    response = client.post(
+        "/tools",
+        json={
+            "name": "Test Tool",
+            "description": "A tool for testing",
+        },
+    )
     assert response.status_code == 201
     data = response.json()
     assert data["name"] == "Test Tool"
@@ -16,10 +19,10 @@ def test_create_tool(client):
 
 
 def test_get_tool(client):
-    created = client.post("/tools", json={
-        "name": "web-search",
-        "description": "Searches the web"
-    }).json()
+    created = client.post(
+        "/tools",
+        json={"name": "web-search", "description": "Searches the web"},
+    ).json()
 
     response = client.get(f"/tools/{created['id']}")
     assert response.status_code == 200
@@ -27,10 +30,13 @@ def test_get_tool(client):
 
 
 def test_get_all_tools(client):
-    client.post("/tools",
-                json={"name": "web-search", "description": "Searches the web"})
-    client.post("/tools",
-                json={"name": "summarizer", "description": "Summarizes text"})
+    client.post(
+        "/tools",
+        json={"name": "web-search", "description": "Searches the web"},
+    )
+    client.post(
+        "/tools", json={"name": "summarizer", "description": "Summarizes text"}
+    )
 
     response = client.get("/tools")
     assert response.status_code == 200
@@ -38,24 +44,24 @@ def test_get_all_tools(client):
 
 
 def test_update_tool(client):
-    created = client.post("/tools", json={
-        "name": "web-search",
-        "description": "Searches the web"
-    }).json()
+    created = client.post(
+        "/tools",
+        json={"name": "web-search", "description": "Searches the web"},
+    ).json()
 
-    response = client.put(f"/tools/{created['id']}", json={
-        "description": "Updated description"
-    })
+    response = client.put(
+        f"/tools/{created['id']}", json={"description": "Updated description"}
+    )
     assert response.status_code == 200
     assert response.json()["description"] == "Updated description"
     assert response.json()["name"] == "web-search"
 
 
 def test_delete_tool(client):
-    created = client.post("/tools", json={
-        "name": "web-search",
-        "description": "Searches the web"
-    }).json()
+    created = client.post(
+        "/tools",
+        json={"name": "web-search", "description": "Searches the web"},
+    ).json()
 
     response = client.delete(f"/tools/{created['id']}")
     assert response.status_code == 204
@@ -70,10 +76,10 @@ def test_get_tool_not_found(client):
 
 
 def test_tenant_isolation(db, client):
-    created = client.post("/tools", json={
-        "name": "web-search",
-        "description": "Searches the web"
-    }).json()
+    created = client.post(
+        "/tools",
+        json={"name": "web-search", "description": "Searches the web"},
+    ).json()
 
     from app.main import app
 
@@ -83,6 +89,7 @@ def test_tenant_isolation(db, client):
     app.dependency_overrides[get_tenant] = other_tenant
 
     from fastapi.testclient import TestClient
+
     other_client = TestClient(app)
 
     response = other_client.get(f"/tools/{created['id']}")

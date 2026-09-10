@@ -1,19 +1,36 @@
 import requests
 
+from app.core.safe_math import UnsafeExpression, safe_eval
 from app.logger import get_logger
 
 logger = get_logger(__name__)
 
+HTTP_TIMEOUT = 10
+
 
 def calculator(expression: str) -> str:
+    """Evaluates an arithmetic expression. See core.safe_math."""
     try:
-        result = eval(expression, {"__builtins__": {}})
-        return str(result)
-    except Exception as e:
+        return str(safe_eval(expression))
+    except UnsafeExpression as e:
+        logger.warning(
+            f"Rejected expression | expression={expression[:80]!r} reason={e}"
+        )
         return f"ERROR: invalid expression — {e}"
+    except ZeroDivisionError:
+        return "ERROR: invalid expression — division by zero"
+    except (OverflowError, ValueError) as e:
+        return f"ERROR: could not compute — {e}"
 
 
 def make_search_knowledge(tenant_id: str):
+    """
+    Builds a search_knowledge bound to one tenant.
+
+    The tenant is closed over rather than passed as a tool argument so the
+    model has no way to name a collection it should not reach.
+    """
+
     def search_knowledge(query: str) -> str:
         from app.core.rag import rag_pipeline
 
@@ -32,7 +49,7 @@ def make_search_knowledge(tenant_id: str):
 
 
 def summarize(text: str) -> str:
-    # Placeholder
+    # Placeholder: truncates rather than summarizing.
     words = text.split()
     if len(words) <= 30:
         return text
@@ -43,13 +60,29 @@ def get_weather(city: str) -> str:
     try:
         lat, long = get_coordinates(city)
     except ValueError as e:
-        return str(e)
-    temp_res = requests.get(
-        f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={long}&current=temperature_2m,weathercode"
-    )
-    temp_res_json = temp_res.json()
-    temperature = temp_res_json.get("current").get("temperature_2m")
-    weathercode = temp_res_json.get("current").get("weathercode")
+        return f"ERROR: {e}"
+    except requests.RequestException as e:
+        return f"ERROR: geocoding request failed — {e}"
+
+    try:
+        temp_res = requests.get(
+            "https://api.open-meteo.com/v1/forecast",
+            params={
+                "latitude": lat,
+                "longitude": long,
+                "current": "temperature_2m,weathercode",
+            },
+            timeout=HTTP_TIMEOUT,
+        )
+        temp_res.raise_for_status()
+        current = temp_res.json().get("current", {})
+    except requests.RequestException as e:
+        return f"ERROR: weather request failed — {e}"
+    except ValueError as e:
+        return f"ERROR: malformed weather response — {e}"
+
+    temperature = current.get("temperature_2m")
+    weathercode = current.get("weathercode")
 
     weather_descriptions = {
         0: "clear sky",
@@ -71,21 +104,21 @@ def get_weather(city: str) -> str:
     return f"Temperature in {city}: {temperature}°C, condition: {description}"
 
 
-def get_coordinates(city: str):
+def get_coordinates(city: str) -> tuple[float, float]:
     res = requests.get(
-        f"https://geocoding-api.open-meteo.com/v1/search?name={city}&count=1&language=en"
+        "https://geocoding-api.open-meteo.com/v1/search",
+        params={"name": city, "count": 1, "language": "en"},
+        timeout=HTTP_TIMEOUT,
     )
-    res_json = res.json()
-    results = res_json.get("results")
+    res.raise_for_status()
+    results = res.json().get("results")
     if not results:
         raise ValueError(f"City '{city}' not found.")
-    res_lat = results[0].get("latitude")
-    res_long = results[0].get("longitude")
-    return res_lat, res_long
+    return results[0].get("latitude"), results[0].get("longitude")
 
 
 def web_search(query: str) -> str:
-    # Placeholder
+    # Placeholder: returns a canned string, makes no request.
     logger.info(f"web_search called | query={query}")
     return f"Simulated results to: '{query}'"
 
@@ -95,23 +128,35 @@ def think(reasoning: str) -> str:
 
 
 # --- Registry ---
+#
+# A tool row in the database only becomes callable if its name appears
+# here. The registry owns the JSON schema the model is shown; the database
+# row owns the tenant-facing description.
 
 TOOL_REGISTRY: dict[str, dict] = {
     "calculator": {
         "func": calculator,
+        "description": "Evaluate an arithmetic expression.",
         "parameters": {
             "type": "object",
             "properties": {
                 "expression": {
                     "type": "string",
-                    "description": "Math expression to evaluate, e.g. '10 * 3 + 5'",
+                    "description": (
+                        "Arithmetic expression to evaluate, "
+                        "e.g. '10 * 3 + 5'"
+                    ),
                 }
             },
             "required": ["expression"],
         },
     },
     "search_knowledge": {
+        # Bound per tenant at execution time by make_search_knowledge.
         "func": None,
+        "description": (
+            "Search the tenant's internal knowledge base for information."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
@@ -125,6 +170,7 @@ TOOL_REGISTRY: dict[str, dict] = {
     },
     "summarize": {
         "func": summarize,
+        "description": "Shorten a long piece of text.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -133,9 +179,26 @@ TOOL_REGISTRY: dict[str, dict] = {
             "required": ["text"],
         },
     },
+    "get_weather": {
+        "func": get_weather,
+        "description": "Get the current weather for a city.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "city": {
+                    "type": "string",
+                    "description": "City name, e.g. 'Lisbon'",
+                }
+            },
+            "required": ["city"],
+        },
+    },
     "think": {
         "func": think,
-        "description": "Reason step by step before taking an action. Does not affect the external world.",
+        "description": (
+            "Reason step by step before taking an action. "
+            "Does not affect the external world."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
@@ -149,6 +212,7 @@ TOOL_REGISTRY: dict[str, dict] = {
     },
     "web_search": {
         "func": web_search,
+        "description": "Search the web for information.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -158,3 +222,5 @@ TOOL_REGISTRY: dict[str, dict] = {
         },
     },
 }
+
+AVAILABLE_TOOL_NAMES = sorted(TOOL_REGISTRY)

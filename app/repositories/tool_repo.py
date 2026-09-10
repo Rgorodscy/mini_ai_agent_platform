@@ -24,24 +24,20 @@ class ToolRepository:
         )
 
     def get_all(
-            self,
-            tenant_id: str,
-            agent_name: Optional[str] = None) -> list[Tool]:
+        self, tenant_id: str, agent_name: Optional[str] = None
+    ) -> list[Tool]:
         query = self.db.query(Tool).filter(Tool.tenant_id == tenant_id)
 
         if agent_name:
-            query = (
-                query
-                .join(Tool.agents)
-                .filter(Agent.name.ilike(f"%{agent_name}%")))
+            query = query.join(Tool.agents).filter(
+                Agent.name.ilike(f"%{agent_name}%")
+            )
 
         return query.all()
 
     def update(
-            self,
-            tool: Tool,
-            name: Optional[str],
-            description: Optional[str]) -> Tool:
+        self, tool: Tool, name: Optional[str], description: Optional[str]
+    ) -> Tool:
         if name is not None:
             tool.name = name
         if description is not None:

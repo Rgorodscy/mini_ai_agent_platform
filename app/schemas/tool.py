@@ -29,7 +29,8 @@ class ToolUpdate(BaseModel):
                 raise ValueError(f"{info.field_name} cannot be empty")
             if len(v) > 200:
                 raise ValueError(
-                    f"{info.field_name} cannot exceed 200 characters")
+                    f"{info.field_name} cannot exceed 200 characters"
+                )
             return v.strip()
         return v
 

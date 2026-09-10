@@ -14,7 +14,7 @@ router = APIRouter(prefix="/tools", tags=["tools"])
 def create_tool(
     data: ToolCreate,
     tenant_id: str = Depends(get_tenant),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     return ToolService(db).create_tool(tenant_id=tenant_id, data=data)
 
@@ -23,7 +23,7 @@ def create_tool(
 def get_tool(
     tool_id: str,
     tenant_id: str = Depends(get_tenant),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     return ToolService(db).get_tool(tool_id=tool_id, tenant_id=tenant_id)
 
@@ -32,10 +32,11 @@ def get_tool(
 def get_all_tools(
     tenant_id: str = Depends(get_tenant),
     agent_name: Optional[str] = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
-    return ToolService(db).get_all_tools(tenant_id=tenant_id,
-                                         agent_name=agent_name)
+    return ToolService(db).get_all_tools(
+        tenant_id=tenant_id, agent_name=agent_name
+    )
 
 
 @router.put("/{tool_id}", response_model=ToolResponse)
@@ -43,17 +44,17 @@ def update_tool(
     tool_id: str,
     data: ToolUpdate,
     tenant_id: str = Depends(get_tenant),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
-    return ToolService(db).update_tool(tool_id=tool_id,
-                                       tenant_id=tenant_id,
-                                       data=data)
+    return ToolService(db).update_tool(
+        tool_id=tool_id, tenant_id=tenant_id, data=data
+    )
 
 
 @router.delete("/{tool_id}", status_code=204)
 def delete_tool(
     tool_id: str,
     tenant_id: str = Depends(get_tenant),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     ToolService(db).delete_tool(tool_id=tool_id, tenant_id=tenant_id)

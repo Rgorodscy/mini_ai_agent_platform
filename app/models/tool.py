@@ -14,8 +14,9 @@ class Tool(Base):
     description = Column(String, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(
-        DateTime, server_default=func.now(), onupdate=func.now())
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
 
-    agents = relationship("Agent",
-                          secondary="agent_tools",
-                          back_populates="tools")
+    agents = relationship(
+        "Agent", secondary="agent_tools", back_populates="tools"
+    )

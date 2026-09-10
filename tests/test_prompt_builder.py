@@ -2,10 +2,12 @@ from unittest.mock import MagicMock
 from app.core.prompt_builder import build_prompt
 
 
-def make_mock_agent(name="Test Agent",
-                    role="researcher",
-                    description="A test agent",
-                    tools=None):
+def make_mock_agent(
+    name="Test Agent",
+    role="researcher",
+    description="A test agent",
+    tools=None,
+):
     agent = MagicMock()
     agent.name = name
     agent.role = role
@@ -72,7 +74,8 @@ def test_prompt_tools_contains_tool_description():
     agent = make_mock_agent(tools=[tool])
     result = build_prompt(agent, "some task")
     assert result["tools"][0]["description"] == (
-        "Searches the web for information")
+        "Searches the web for information"
+    )
 
 
 def test_prompt_multiple_tools():

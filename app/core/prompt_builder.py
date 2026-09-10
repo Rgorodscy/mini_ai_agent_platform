@@ -3,8 +3,8 @@ from app.models.agent import Agent
 
 def build_prompt(agent: Agent, task: str) -> str:
     tool_descriptions = [
-        {"name": tool.name, "description": tool.description} for
-        tool in agent.tools
+        {"name": tool.name, "description": tool.description}
+        for tool in agent.tools
     ]
 
     system_instructions = (
@@ -17,5 +17,5 @@ def build_prompt(agent: Agent, task: str) -> str:
     return {
         "system": system_instructions,
         "tools": tool_descriptions,
-        "user": task
+        "user": task,
     }

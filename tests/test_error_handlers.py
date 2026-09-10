@@ -14,6 +14,7 @@ def error_client():
     TestClient with dependency overrides and
     raise_server_exceptions=False.
     """
+
     def override_get_db():
         db = TestingSessionLocal()
         try:
@@ -35,7 +36,7 @@ def error_client():
 def test_sqlalchemy_error_returns_500(error_client):
     with patch(
         "app.repositories.tool_repo.ToolRepository.get_all",
-        side_effect=SQLAlchemyError("DB connection lost")
+        side_effect=SQLAlchemyError("DB connection lost"),
     ):
         response = error_client.get("/tools")
         assert response.status_code == 500
@@ -45,7 +46,7 @@ def test_sqlalchemy_error_returns_500(error_client):
 def test_sqlalchemy_error_returns_json(error_client):
     with patch(
         "app.repositories.tool_repo.ToolRepository.get_all",
-        side_effect=SQLAlchemyError("DB connection lost")
+        side_effect=SQLAlchemyError("DB connection lost"),
     ):
         response = error_client.get("/tools")
         assert "application/json" in response.headers["content-type"]
@@ -54,7 +55,7 @@ def test_sqlalchemy_error_returns_json(error_client):
 def test_generic_exception_returns_500(error_client):
     with patch(
         "app.repositories.tool_repo.ToolRepository.get_all",
-        side_effect=Exception("Something totally unexpected")
+        side_effect=Exception("Something totally unexpected"),
     ):
         response = error_client.get("/tools")
         assert response.status_code == 500
@@ -64,7 +65,7 @@ def test_generic_exception_returns_500(error_client):
 def test_generic_exception_returns_json(error_client):
     with patch(
         "app.repositories.tool_repo.ToolRepository.get_all",
-        side_effect=Exception("Something totally unexpected")
+        side_effect=Exception("Something totally unexpected"),
     ):
         response = error_client.get("/tools")
         assert "application/json" in response.headers["content-type"]

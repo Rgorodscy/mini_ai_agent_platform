@@ -25,13 +25,15 @@ env/
 # -------------------------
 .env
 .env.*
+!.env.example
 
 # -------------------------
-# Databases
+# Databases & vector store
 # -------------------------
 *.db
 *.sqlite
 *.sqlite3
+chroma_db/
 
 # -------------------------
 # Alembic
@@ -66,15 +68,11 @@ Thumbs.db
 *.log
 
 # -------------------------
-# MyPy / Type checking
+# Type checking
 # -------------------------
 .mypy_cache/
 .dmypy.json
 dmypy.json
-
-# -------------------------
-# Pyright / Pylance
-# -------------------------
 pyrightconfig.json
 
 # -------------------------
@@ -83,12 +81,13 @@ pyrightconfig.json
 .ipynb_checkpoints/
 
 # -------------------------
-# Misc
+# Local scratch
 # -------------------------
+# Personal documents and scratch notes used to exercise ingestion locally.
+# Keep them out of the repo rather than ignoring every .txt/.pdf/.docx,
+# which previously came close to excluding requirements.txt.
+local/
 *.tmp
-
-# Local config files
-pyproject.toml
-*.docx
-*.pdf
-*.txt
+requirements.lock.txt
+CONSULTING_AGREEMENT.*
+EXEMPLOS.txt

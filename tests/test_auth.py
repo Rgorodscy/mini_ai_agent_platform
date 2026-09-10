@@ -1,29 +1,13 @@
-import os
-import pytest
-from fastapi.testclient import TestClient
-from app.main import app
-from app.database import get_db
-from tests.conftest import TestingSessionLocal
+"""
+Tests the auth middleware itself, so these use the `raw_client` fixture
+(real API-key validation) rather than `client` (tenant overridden).
+"""
 
+from tests.conftest import TENANT_A_KEY, TENANT_B_KEY, TENANT_C_KEY
 
-API_KEY_A = os.getenv("API_KEY_TENANT_A")
-API_KEY_B = os.getenv("API_KEY_TENANT_B")
-API_KEY_C = os.getenv("API_KEY_TENANT_C")
-
-
-@pytest.fixture
-def raw_client(setup_database):
-    """Client with no auth override — tests real auth middleware."""
-    def override_get_db():
-        db = TestingSessionLocal()
-        try:
-            yield db
-        finally:
-            db.close()
-
-    app.dependency_overrides[get_db] = override_get_db
-    yield TestClient(app, raise_server_exceptions=False)
-    app.dependency_overrides.clear()
+API_KEY_A = TENANT_A_KEY
+API_KEY_B = TENANT_B_KEY
+API_KEY_C = TENANT_C_KEY
 
 
 def test_missing_api_key_returns_422(raw_client):
@@ -33,10 +17,10 @@ def test_missing_api_key_returns_422(raw_client):
 
 
 def test_missing_api_key_on_post(raw_client):
-    response = raw_client.post("/tools", json={
-        "name": "web-search",
-        "description": "Searches the web"
-    })
+    response = raw_client.post(
+        "/tools",
+        json={"name": "web-search", "description": "Searches the web"},
+    )
     assert response.status_code == 422
 
 
@@ -61,8 +45,9 @@ def test_empty_api_key_returns_401(raw_client):
 
 
 def test_wrong_api_key_returns_401(raw_client):
-    response = raw_client.get("/tools",
-                              headers={"x-api-key": "key-tenant-wrong-999"})
+    response = raw_client.get(
+        "/tools", headers={"x-api-key": "key-tenant-wrong-999"}
+    )
     assert response.status_code == 401
 
 
@@ -83,10 +68,11 @@ def test_valid_api_key_c_returns_200(raw_client):
 
 def test_different_keys_are_isolated(raw_client):
     """Tools created by tenant a must not be visible to tenant b."""
-    raw_client.post("/tools",
-                    headers={"x-api-key": API_KEY_A},
-                    json={"name": "a-tool", "description": "a's tool"}
-                    )
+    raw_client.post(
+        "/tools",
+        headers={"x-api-key": API_KEY_A},
+        json={"name": "a-tool", "description": "a's tool"},
+    )
 
     response = raw_client.get("/tools", headers={"x-api-key": API_KEY_B})
     assert response.status_code == 200
@@ -95,10 +81,11 @@ def test_different_keys_are_isolated(raw_client):
 
 def test_same_key_can_see_own_tools(raw_client):
     """Tenant can see their own tools."""
-    raw_client.post("/tools",
-                    headers={"x-api-key": API_KEY_A},
-                    json={"name": "a-tool", "description": "a's tool"}
-                    )
+    raw_client.post(
+        "/tools",
+        headers={"x-api-key": API_KEY_A},
+        json={"name": "a-tool", "description": "a's tool"},
+    )
 
     response = raw_client.get("/tools", headers={"x-api-key": API_KEY_A})
     assert response.status_code == 200

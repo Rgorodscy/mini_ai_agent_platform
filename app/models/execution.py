@@ -18,4 +18,5 @@ class Execution(Base):
     status = Column(String, nullable=False, default="pending")
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(
-        DateTime, server_default=func.now(), onupdate=func.now())
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )

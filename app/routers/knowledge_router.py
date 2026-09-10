@@ -73,19 +73,3 @@ async def ingest_document(
         status="ingested",
         message=f"Document '{doc_id}' ingested successfully.",
     )
-
-
-"""
----
-
-**Pontos-chave para você entender:**
-
-**Por que `Form()` e não Pydantic model?** Porque `multipart/form-data` (necessário para upload) e `application/json` são content-types mutuamente exclusivos no HTTP. O FastAPI não consegue ler um Pydantic body JSON quando o request é multipart.
-
-**Por que `metadata` como string JSON?** Em `multipart/form-data`, todos os campos são strings. Então você serializa o dict no cliente (`JSON.stringify`) e desserializa no servidor com `json.loads`.
-
-**Por que `async def`?** O `await file.read()` exige isso — sem ele o FastAPI travaria esperando I/O de arquivo.
-
-**Dependências a adicionar:**
-pip install pypdf python-docx
-"""

@@ -35,8 +35,9 @@ def get_agents(
     tool_name: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
-    return AgentService(db).get_agents(tenant_id=tenant_id,
-                                       tool_name=tool_name)
+    return AgentService(db).get_agents(
+        tenant_id=tenant_id, tool_name=tool_name
+    )
 
 
 @router.put("/{agent_id}", response_model=AgentResponse)
@@ -47,9 +48,8 @@ def update_agent(
     db: Session = Depends(get_db),
 ):
     return AgentService(db).update_agent(
-                                        agent_id=agent_id,
-                                        tenant_id=tenant_id,
-                                        data=data)
+        agent_id=agent_id, tenant_id=tenant_id, data=data
+    )
 
 
 @router.delete("/{agent_id}", status_code=204)

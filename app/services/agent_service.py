@@ -22,25 +22,25 @@ class AgentService:
             if not tool:
                 logger.warning(
                     f"Tool not found during agent operation | "
-                    f"tool_id={tool_id} tenant={tenant_id}")
+                    f"tool_id={tool_id} tenant={tenant_id}"
+                )
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Tool {tool_id} not found"
+                    detail=f"Tool {tool_id} not found",
                 )
             tools.append(tool)
         return tools
 
     def create_agent(
-            self,
-            tenant_id: str,
-            agent_data: AgentCreate) -> AgentResponse:
+        self, tenant_id: str, agent_data: AgentCreate
+    ) -> AgentResponse:
         tools = self._resolve_tools(agent_data.tools, tenant_id)
         agent = self.agent_repo.create(
             tenant_id=tenant_id,
             name=agent_data.name,
             role=agent_data.role,
             description=agent_data.description,
-            tools=tools
+            tools=tools,
         )
         logger.info(f"Agent created | agent_id={agent.id} tenant={tenant_id}")
         return AgentResponse.model_validate(agent)
@@ -49,41 +49,40 @@ class AgentService:
         agent = self.agent_repo.get_by_id(agent_id, tenant_id)
         if not agent:
             logger.warning(
-                f"Agent not found | agent_id={agent_id} tenant={tenant_id}")
+                f"Agent not found | agent_id={agent_id} tenant={tenant_id}"
+            )
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Agent {agent_id} not found"
+                detail=f"Agent {agent_id} not found",
             )
         return AgentResponse.model_validate(agent)
 
     def get_agents(
-            self,
-            tenant_id: str,
-            tool_name: Optional[str] = None) -> list[AgentResponse]:
+        self, tenant_id: str, tool_name: Optional[str] = None
+    ) -> list[AgentResponse]:
         agents = self.agent_repo.get_all(tenant_id, tool_name)
         return [AgentResponse.model_validate(agent) for agent in agents]
 
     def update_agent(
-            self,
-            agent_id: str,
-            tenant_id: str,
-            data: AgentUpdate) -> AgentResponse:
+        self, agent_id: str, tenant_id: str, data: AgentUpdate
+    ) -> AgentResponse:
         agent = self.agent_repo.get_by_id(agent_id, tenant_id)
         if not agent:
             logger.warning(
-                f"Agent not found | agent_id={agent_id} tenant={tenant_id}")
+                f"Agent not found | agent_id={agent_id} tenant={tenant_id}"
+            )
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Agent {agent_id} not found"
+                detail=f"Agent {agent_id} not found",
             )
-        tools = (self._resolve_tools(data.tools, tenant_id) if
-                 data.tools is not None else None)
+        tools = (
+            self._resolve_tools(data.tools, tenant_id)
+            if data.tools is not None
+            else None
+        )
         updated = self.agent_repo.update(
-            agent,
-            data.name,
-            data.role,
-            data.description,
-            tools)
+            agent, data.name, data.role, data.description, tools
+        )
         logger.info(f"Agent updated | agent_id={agent_id} tenant={tenant_id}")
         return AgentResponse.model_validate(updated)
 
@@ -91,10 +90,11 @@ class AgentService:
         agent = self.agent_repo.get_by_id(agent_id, tenant_id)
         if not agent:
             logger.warning(
-                f"Agent not found | agent_id={agent_id} tenant={tenant_id}")
+                f"Agent not found | agent_id={agent_id} tenant={tenant_id}"
+            )
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Agent {agent_id} not found"
+                detail=f"Agent {agent_id} not found",
             )
         logger.info(f"Agent deleted | agent_id={agent_id} tenant={tenant_id}")
         self.agent_repo.delete(agent)

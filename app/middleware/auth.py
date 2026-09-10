@@ -16,7 +16,8 @@ def get_tenant(x_api_key: str = Header(..., description="Tenant API key")):
 
     if not tenant_id:
         logger.warning(
-            f"Invalid API key attempt | key_preview={x_api_key[:8]}...")
+            f"Invalid API key attempt | key_preview={x_api_key[:8]}..."
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing API key",

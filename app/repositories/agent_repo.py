@@ -10,18 +10,19 @@ class AgentRepository:
         self.db = db
 
     def create(
-            self,
-            tenant_id: str,
-            name: str,
-            role: str,
-            description: str,
-            tools: list[Tool]) -> Agent:
+        self,
+        tenant_id: str,
+        name: str,
+        role: str,
+        description: str,
+        tools: list[Tool],
+    ) -> Agent:
         agent = Agent(
             tenant_id=tenant_id,
             name=name,
             role=role,
             description=description,
-            tools=tools
+            tools=tools,
         )
         self.db.add(agent)
         self.db.commit()
@@ -30,12 +31,16 @@ class AgentRepository:
 
     def get_by_id(self, agent_id: str, tenant_id: str) -> Optional[Agent]:
         self.db.expire_all()
-        return self.db.query(Agent).options(joinedload(Agent.tools)).filter(
-            Agent.id == agent_id,
-            Agent.tenant_id == tenant_id).first()
+        return (
+            self.db.query(Agent)
+            .options(joinedload(Agent.tools))
+            .filter(Agent.id == agent_id, Agent.tenant_id == tenant_id)
+            .first()
+        )
 
-    def get_all(self, tenant_id: str, tool_name: Optional[str] = None
-                ) -> list[Agent]:
+    def get_all(
+        self, tenant_id: str, tool_name: Optional[str] = None
+    ) -> list[Agent]:
         query = self.db.query(Agent).filter(Agent.tenant_id == tenant_id)
 
         if tool_name:
@@ -46,12 +51,13 @@ class AgentRepository:
         return query.all()
 
     def update(
-            self,
-            agent: Agent,
-            name: Optional[str] = None,
-            role: Optional[str] = None,
-            description: Optional[str] = None,
-            tools: Optional[list[Tool]] = None) -> Agent:
+        self,
+        agent: Agent,
+        name: Optional[str] = None,
+        role: Optional[str] = None,
+        description: Optional[str] = None,
+        tools: Optional[list[Tool]] = None,
+    ) -> Agent:
         if name is not None:
             agent.name = name
         if role is not None:

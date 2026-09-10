@@ -3,7 +3,6 @@ import docx
 import pypdf
 from fastapi import UploadFile, HTTPException, status
 
-
 SUPPORTED_CONTENT_TYPES = {
     "application/pdf",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",

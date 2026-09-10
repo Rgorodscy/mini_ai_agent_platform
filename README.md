@@ -1,324 +1,296 @@
 # Mini Agent Platform
 
-A multi-tenant AI Agent Platform built with FastAPI, SQLAlchemy, and SQLite. Agents are configurable entities with tools that can run tasks through a mock AI pipeline with multi-step execution.
+A multi-tenant AI agent platform. Tenants configure agents, give them
+tools, upload documents to a private knowledge base, and run tasks
+against them. Every run is executed by a LangGraph state machine that
+calls a real LLM, executes tools, and records a full audit trail.
+
+Built with FastAPI, SQLAlchemy, LangGraph, Groq and ChromaDB.
 
 ---
 
 ## Table of Contents
 
-- [Architecture Overview](#architecture-overview)
-- [Project Structure](#project-structure)
-- [Requirements](#requirements)
-- [Setup & Run](#setup--run)
-- [Running Tests](#running-tests)
-- [API Reference](#api-reference)
-- [Design Decisions](#design-decisions)
-- [Known Limitations](#known-limitations)
+- [What it does](#what-it-does)
+- [Architecture](#architecture)
+- [Project structure](#project-structure)
+- [Setup](#setup)
+- [Running tests](#running-tests)
+- [API reference](#api-reference)
+- [Design decisions](#design-decisions)
+- [Security model](#security-model)
+- [Known limitations](#known-limitations)
 
 ---
 
-## Architecture Overview
+## What it does
 
-The project follows a strict 3-layer architecture:
+1. A tenant authenticates with an API key that resolves to a `tenant_id`.
+2. They register **tools** and compose **agents** out of them.
+3. They upload documents (text, PDF, DOCX) to `/knowledge`. Documents are
+   semantically chunked, embedded and stored in a per-tenant ChromaDB
+   collection.
+4. They run an agent against a task. The agent loops — reasoning, calling
+   tools, searching its knowledge base — until it produces an answer or
+   hits its step budget.
+5. Every step of every run is persisted and queryable.
 
-```
-Router (HTTP) → Service (business logic) → Repository (database)
-```
-
-The core AI pipeline lives in `app/core/` and is fully decoupled from the API layer:
-
-```
-guardrail.py       → Prompt injection detection (regex/heuristic, deterministic)
-prompt_builder.py  → Builds structured prompt from agent config + user task
-mock_llm.py        → Simulates LLM responses deterministically (no real API calls)
-mock_tools.py      → Simulates tool execution deterministically
-execution_loop.py  → Orchestrates multi-step tool call → response loop
-```
+No data, no vector, and no execution is ever visible across tenants.
 
 ---
 
-## Project Structure
+## Architecture
+
+The API follows a strict three-layer split, and the agent core sits
+behind it with no knowledge of HTTP or the database:
+
+```
+Router (HTTP)  →  Service (business logic)  →  Repository (database)
+                        │
+                        └→  core/  (agent execution + RAG)
+```
+
+### The execution loop
+
+`app/core/execution_loop.py` compiles a LangGraph state machine:
+
+```
+        ┌──────────────┐
+   ┌───▶│  call_model  │────────┐
+   │    └──────────────┘        │
+   │            │               │  no tool calls
+   │            │ tool calls    │  · step budget exhausted
+   │            ▼               │  · 3 consecutive errors
+   │    ┌──────────────┐        ▼
+   └────│execute_tools │      END
+        └──────────────┘
+```
+
+Each cycle appends to two accumulating channels: `messages` (what the
+model sees) and `steps` (the audit trail the API returns). The loop is
+bounded on three axes — step count, consecutive errors, and the model
+choosing to answer in plain text.
+
+### The RAG pipeline
+
+`search_knowledge` is a tool like any other, but it runs a full pipeline:
+
+```
+query
+  → expand_query    LLM rewrites it into several phrasings (widen recall)
+  → retrieve        vector search per variation, deduplicated
+  → rerank          cross-encoder scores query↔chunk pairs (raise precision)
+  → answer          top chunks become grounding context for the LLM
+```
+
+Retrieval widens, reranking narrows. The cross-encoder is far more
+accurate than embedding similarity because it sees the query and the
+chunk together — and far too slow to run over the whole collection, which
+is exactly why it only ever sees what retrieval already shortlisted.
+
+Documents are chunked semantically (`core/rag/chunker.py`): sentences are
+grouped while they stay above a similarity threshold, so a chunk breaks
+where the topic changes rather than at an arbitrary character count, with
+a recursive character-split fallback for oversized chunks.
+
+---
+
+## Project structure
 
 ```
 app/
-├── main.py                  # FastAPI app entry point
-├── config.py                # Settings loaded from environment variables
-├── database.py              # SQLAlchemy engine and session
-├── logger.py                # Logging configuration
-├── middleware/
-│   └── auth.py              # API key → tenant_id extraction
-├── models/                  # SQLAlchemy ORM models
-│   ├── agent.py
-│   ├── tool.py
-│   └── execution.py
-├── schemas/                 # Pydantic request/response models
-│   ├── agent.py
-│   ├── tool.py
-│   └── execution.py
-├── repositories/            # All database queries (always scoped by tenant_id)
-│   ├── agent_repo.py
-│   ├── tool_repo.py
-│   └── execution_repo.py
-├── services/                # Business logic layer
-│   ├── agent_service.py
-│   ├── tool_service.py
-│   └── execution_service.py
-├── core/                    # AI pipeline (pure functions, no DB dependency)
-│   ├── guardrail.py
-│   ├── prompt_builder.py
-│   ├── mock_llm.py
-│   ├── mock_tools.py
-│   └── execution_loop.py
-└── routers/
-    ├── agent_router.py
-    ├── tool_router.py
-    └── execution_router.py
+├── main.py                   # App entry point, error handlers, lifespan
+├── config.py                 # Environment-driven settings
+├── database.py               # SQLAlchemy engine and session
+├── logger.py                 # Logging setup
+├── middleware/auth.py        # API key → tenant_id
+├── models/                   # SQLAlchemy ORM models
+├── schemas/                  # Pydantic request/response models
+├── repositories/             # Database queries (always tenant-scoped)
+├── services/                 # Business logic
+├── routers/                  # HTTP endpoints
+└── core/                     # Agent execution — no HTTP, no DB
+    ├── execution_loop.py     # LangGraph state machine
+    ├── guardrail.py          # Injection detection
+    ├── prompt_builder.py     # Structured prompt assembly
+    ├── safe_math.py          # AST-based arithmetic evaluator
+    ├── tool_implementations.py  # Tool registry
+    ├── utils.py              # PDF/DOCX/text extraction
+    └── rag/
+        ├── chunker.py        # Semantic + recursive chunking
+        ├── indexer.py        # Ingestion
+        ├── retriever.py      # Vector search
+        ├── query_expander.py # Query rewriting
+        ├── reranker.py       # Cross-encoder reranking
+        ├── rag_pipeline.py   # Orchestration
+        └── utils.py          # Embedder & ChromaDB clients
 
-tests/
-├── conftest.py
-├── test_agents.py
-├── test_tools.py
-├── test_executions.py
-├── test_execution_loop.py
-├── test_guardrail.py
-├── test_mock_llm.py
-├── test_mock_tools.py
-├── test_prompt_builder.py
-├── test_auth.py
-├── test_error_handlers.py
-└── test_input_validation.py
-
-alembic/                     # Database migrations
-pytest.ini                   # Pytest configuration with automatic coverage
-requirements.txt             # Project dependencies
-.env.example                 # Environment variable template
+tests/                        # 167 tests, no network access
+alembic/                      # Database migrations
 ```
 
 ---
 
-## Requirements
+## Setup
+
+### Requirements
 
 - Python 3.12+
-- pip
 
----
-
-## Setup & Run
-
-### 1. Clone the repository and create a virtual environment
+### 1. Install
 
 ```bash
-git clone <repo-url>
-cd mini_agent_platform
-
 python -m venv venv
 source venv/bin/activate       # Windows: venv\Scripts\activate
-```
 
-### 2. Install dependencies
-
-```bash
 pip install -r requirements.txt
 ```
 
-### 3. Configure environment variables
+`sentence-transformers` pulls in PyTorch. For a CPU-only install (much
+smaller), install torch first:
+
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+```
+
+### 2. Configure
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` and fill in your values. The app will refuse to start if any required variables are missing:
+Fill in the values. The app refuses to start if a required variable is
+missing. You need a free API key from [console.groq.com](https://console.groq.com).
 
-```ini
-DATABASE_URL=sqlite:///./agent_platform.db
-MAX_EXECUTION_STEPS=5
-API_KEY_TENANT_A=your-secure-key-here
-API_KEY_TENANT_B=your-secure-key-here
-API_KEY_TENANT_C=your-secure-key-here
-```
-
-### 4. Run database migrations
+### 3. Migrate
 
 ```bash
 alembic upgrade head
 ```
 
-This creates `agent_platform.db` in the project root.
-
-### 5. Start the server
+### 4. Run
 
 ```bash
 uvicorn app.main:app --reload
 ```
 
-The API is now running at `http://localhost:8000`.
+Interactive docs: `http://localhost:8000/docs`.
 
-Interactive docs are available at `http://localhost:8000/docs`.
-
----
-
-## Running Tests
-
-```bash
-pytest tests/
-```
-
-Coverage is reported automatically on every run via `pytest.ini`. The full suite runs 153 tests across all layers with 95% code coverage.
-
-To run a specific test file:
-
-```bash
-pytest tests/test_guardrail.py -v
-pytest tests/test_execution_loop.py -v
-pytest tests/test_executions.py -v
-```
-
-To generate an HTML coverage report:
-
-```bash
-pytest tests/ --cov-report=html
-```
-
-Open `htmlcov/index.html` in your browser to see line-by-line coverage.
+The embedding and reranking models (~120MB combined) are downloaded from
+HuggingFace on first use and cached locally, so the first knowledge
+search is slower than the rest.
 
 ---
 
-## API Reference
+## Running tests
 
-### Authentication
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
 
-Every request must include the API key in the request header:
+167 tests, ~10 seconds, **75% coverage**.
+
+The suite is hermetic: an autouse fixture in `tests/conftest.py` replaces
+the Groq client, the embedding model and the cross-encoder with fakes for
+every test. No test can reach the network or spend money — a test that
+forgets to stub the LLM gets a canned response rather than a real call.
+Each test also gets its own database and its own vector store.
+
+Coverage is concentrated in the API and agent-execution layers. The RAG
+pipeline is currently exercised only indirectly — see
+[Known limitations](#known-limitations).
+
+---
+
+## API reference
+
+Every request needs an API key header:
 
 ```
 x-api-key: <your-api-key>
 ```
 
-API keys are configured via environment variables. The keys defined in `.env` map to these tenants:
+Keys come from `.env` and map to tenants:
 
-| Environment Variable | Tenant ID  |
+| Environment variable | Tenant ID  |
 | -------------------- | ---------- |
 | `API_KEY_TENANT_A`   | `tenant_a` |
 | `API_KEY_TENANT_B`   | `tenant_b` |
 | `API_KEY_TENANT_C`   | `tenant_c` |
 
-Use the actual key values from your `.env` file in all requests below.
-
----
-
 ### Tools
 
-#### Create a tool
+Tools are references to implementations that ship with the platform. A
+tool only becomes callable if its `name` matches an entry in
+`TOOL_REGISTRY` — currently:
+
+`calculator`, `get_weather`, `search_knowledge`, `summarize`, `think`,
+`web_search`
 
 ```bash
+# Create
 curl -X POST http://localhost:8000/tools \
-  -H "x-api-key: <your-api-key>" \
-  -H "Content-Type: application/json" \
-  -d '{"name": "web-search", "description": "Searches the web for information"}'
-```
+  -H "x-api-key: $API_KEY" -H "Content-Type: application/json" \
+  -d '{"name": "web_search", "description": "Searches the web"}'
 
-#### Get all tools (with optional filter by agent name)
+# List (optionally filtered by agent)
+curl "http://localhost:8000/tools?agent_name=Research" -H "x-api-key: $API_KEY"
 
-```bash
-curl http://localhost:8000/tools \
-  -H "x-api-key: <your-api-key>"
-
-# Filter by agent name
-curl "http://localhost:8000/tools?agent_name=Research" \
-  -H "x-api-key: <your-api-key>"
-```
-
-#### Get a tool by ID
-
-```bash
-curl http://localhost:8000/tools/{tool_id} \
-  -H "x-api-key: <your-api-key>"
-```
-
-#### Update a tool
-
-```bash
-curl -X PATCH http://localhost:8000/tools/{tool_id} \
-  -H "x-api-key: <your-api-key>" \
-  -H "Content-Type: application/json" \
+# Get / update / delete
+curl http://localhost:8000/tools/{tool_id} -H "x-api-key: $API_KEY"
+curl -X PUT http://localhost:8000/tools/{tool_id} \
+  -H "x-api-key: $API_KEY" -H "Content-Type: application/json" \
   -d '{"description": "Updated description"}'
+curl -X DELETE http://localhost:8000/tools/{tool_id} -H "x-api-key: $API_KEY"
 ```
-
-#### Delete a tool
-
-```bash
-curl -X DELETE http://localhost:8000/tools/{tool_id} \
-  -H "x-api-key: <your-api-key>"
-```
-
----
 
 ### Agents
 
-#### Create an agent
-
 ```bash
 curl -X POST http://localhost:8000/agents \
-  -H "x-api-key: <your-api-key>" \
-  -H "Content-Type: application/json" \
+  -H "x-api-key: $API_KEY" -H "Content-Type: application/json" \
   -d '{
     "name": "Research Agent",
-    "role": "researcher",
-    "description": "Researches topics on the web",
-    "tool_ids": ["<tool_id>"]
+    "role": "a researcher",
+    "description": "Researches topics and answers from internal documents",
+    "tools": ["<tool_id>"]
   }'
 ```
 
-#### Get all agents (with optional filter by tool name)
+`GET /agents`, `GET /agents/{id}`, `PUT /agents/{id}` and
+`DELETE /agents/{id}` behave as expected. `GET /agents?tool_name=` filters
+by tool.
+
+### Knowledge base
+
+Accepts either raw text or a file upload (PDF, DOCX, TXT), as
+`multipart/form-data`:
 
 ```bash
-curl http://localhost:8000/agents \
-  -H "x-api-key: <your-api-key>"
+# Raw text
+curl -X POST http://localhost:8000/knowledge \
+  -H "x-api-key: $API_KEY" \
+  -F "doc_id=policy-2026" \
+  -F "text=Our refund policy allows returns within 30 days." \
+  -F 'metadata={"source":"handbook"}'
 
-# Filter by tool name
-curl "http://localhost:8000/agents?tool_name=web-search" \
-  -H "x-api-key: <your-api-key>"
+# File upload
+curl -X POST http://localhost:8000/knowledge \
+  -H "x-api-key: $API_KEY" \
+  -F "doc_id=contract-42" \
+  -F "file=@./contract.pdf"
 ```
 
-#### Get an agent by ID
+Re-posting the same `doc_id` replaces that document's chunks.
 
-```bash
-curl http://localhost:8000/agents/{agent_id} \
-  -H "x-api-key: <your-api-key>"
-```
-
-#### Update an agent
-
-```bash
-curl -X PATCH http://localhost:8000/agents/{agent_id} \
-  -H "x-api-key: <your-api-key>" \
-  -H "Content-Type: application/json" \
-  -d '{"name": "Updated Name", "tool_ids": ["<tool_id>"]}'
-```
-
-#### Delete an agent
-
-```bash
-curl -X DELETE http://localhost:8000/agents/{agent_id} \
-  -H "x-api-key: <your-api-key>"
-```
-
----
-
-### Run Agent
-
-Runs an agent against a task through the mock AI pipeline.
+### Run an agent
 
 ```bash
 curl -X POST http://localhost:8000/agents/{agent_id}/run \
-  -H "x-api-key: <your-api-key>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "task": "search for the latest AI trends",
-    "model": "gpt-4o"
-  }'
+  -H "x-api-key: $API_KEY" -H "Content-Type: application/json" \
+  -d '{"task": "What is our refund policy?", "model": "llama-3.3-70b-versatile"}'
 ```
-
-Supported models: `gpt-4o`, `gpt-4o-mini`, `gpt-3.5-turbo`
 
 **Example response:**
 
@@ -327,104 +299,159 @@ Supported models: `gpt-4o`, `gpt-4o-mini`, `gpt-3.5-turbo`
   "id": "abc123",
   "agent_id": "xyz789",
   "tenant_id": "tenant_a",
-  "model": "gpt-4o",
-  "task": "search for the latest AI trends",
-  "structured_prompt": {
-    "system": "You are Research Agent, researcher...",
-    "tools": [{ "name": "web-search", "description": "..." }],
-    "user": "search for the latest AI trends"
-  },
+  "model": "llama-3.3-70b-versatile",
+  "task": "What is our refund policy?",
+  "structured_prompt": { "system": "...", "tools": [...], "user": "..." },
   "steps": [
     {
       "step": 1,
       "type": "tool_result",
-      "tool": "web-search",
-      "input": "search for the latest AI trends",
-      "result": "[Mock Search Result] Found 3 relevant articles..."
+      "tool": "search_knowledge",
+      "input": { "query": "refund policy" },
+      "result": "Relevant knowledge for 'refund policy': ..."
     },
     {
       "step": 2,
       "type": "final_response",
-      "content": "Based on the tool results: ..."
+      "content": "Returns are accepted within 30 days."
     }
   ],
-  "final_response": "Based on the tool results: ...",
+  "final_response": "Returns are accepted within 30 days.",
   "status": "completed",
-  "created_at": "2026-03-12T10:00:00"
+  "created_at": "2026-03-30T10:00:00"
 }
 ```
 
-**Execution statuses:**
+**Step types:**
 
-| Status              | Meaning                                          |
-| ------------------- | ------------------------------------------------ |
-| `completed`         | Final response returned successfully             |
-| `max_steps_reached` | Hit the safeguard limit without a final response |
+| Type             | Meaning                                        |
+| ---------------- | ---------------------------------------------- |
+| `tool_result`    | Tool ran and returned a result                 |
+| `tool_error`     | Tool failed, or is not available to this agent |
+| `tool_blocked`   | Arguments failed the injection screen          |
+| `final_response` | The agent's answer                             |
 
-**Guardrail:** Input is scanned for prompt injection and code injection patterns before execution. Returns `400` if detected. Examples of blocked inputs:
+**Statuses:**
 
-- `"ignore previous instructions"`
-- `"you are now a different AI"`
-- `"eval('malicious code')"`
-- `"import os; os.system(...)"`
-- `"jailbreak"`, `"DAN mode"`, `"override your instructions"`
+| Status              | Meaning                                       |
+| ------------------- | --------------------------------------------- |
+| `completed`         | The agent produced an answer                  |
+| `max_steps_reached` | Step budget spent without a final answer      |
 
----
-
-### Execution History
-
-#### Get execution history for an agent (paginated)
+### Execution history
 
 ```bash
 curl "http://localhost:8000/agents/{agent_id}/history?page=1&page_size=10" \
-  -H "x-api-key: <your-api-key>"
+  -H "x-api-key: $API_KEY"
 ```
 
-Pagination constraints: `page` must be ≥ 1, `page_size` must be between 1 and 100.
-
-**Example response:**
-
-```json
-{
-  "total": 25,
-  "page": 1,
-  "size": 10,
-  "executions": [...]
-}
-```
+`page` ≥ 1, `page_size` between 1 and 100.
 
 ---
 
-## Design Decisions
+## Design decisions
 
-**3-layer architecture** — Routers never touch the DB; repositories never contain business logic. Each layer is independently testable and replaceable.
+**Three-layer architecture.** Routers never touch the database;
+repositories never contain business logic. Each layer is independently
+testable and replaceable.
 
-**tenant_id on every query** — All repository methods require `tenant_id` as an explicit parameter. There is no way to accidentally query across tenants.
+**`tenant_id` on every query.** Every repository method takes `tenant_id`
+as an explicit required parameter, and each tenant gets its own ChromaDB
+collection. There is no code path that can accidentally read across
+tenants.
 
-**Environment-based configuration** — All secrets and environment-specific values are loaded from `.env` via `python-dotenv`. The app fails at startup with a clear error if any required variable is missing — no silent defaults for secrets.
+**`search_knowledge` closes over the tenant.** The tenant is bound when
+the tool is constructed, not passed as an argument the model fills in — so
+no prompt can talk the model into naming another tenant's collection.
 
-**Core pipeline as pure functions** — `guardrail`, `prompt_builder`, `mock_llm`, `mock_tools`, and `execution_loop` have no DB dependency. They are tested in complete isolation using `unittest.mock` and `monkeypatch`. Swapping the mock LLM for a real one requires changing only `mock_llm.py` while keeping the same return interface: `{"type": "tool_call", ...}` or `{"type": "final_response", ...}`.
+**No heavy work at import time.** Model loading, the ChromaDB client and
+the LLM client are all behind `lru_cache`d accessors, so importing the
+package needs no network, no API key and no GPU. Configuration that would
+otherwise fail on first use is validated at startup in the app lifespan
+instead. This is what makes the test suite fast and hermetic.
 
-**Deterministic mock LLM** — The mock LLM uses keyword matching against the task to decide whether to call a tool. Same input always produces the same output, making tests reliable and reproducible.
+**The agent core knows nothing about HTTP or the database.** Everything
+under `core/` takes plain arguments and returns plain data. `guardrail`
+exposes `detect_injection` (pure) separately from `check_prompt_injection`
+(raises HTTP 400), so the same detection serves the API layer and the
+execution loop, which needs to block one tool call without failing the
+whole request.
 
-**Execution history as structured JSON** — Each execution stores the full structured prompt, every step including tool inputs and outputs, and the final response. This gives full auditability of every agent run.
+**Execution history as structured JSON.** Each run stores the structured
+prompt, every step with tool inputs and outputs, and the final response —
+full auditability of what the agent actually did.
 
-**Max steps safeguard** — The execution loop is capped at `MAX_EXECUTION_STEPS` (configurable via environment variable, default 5) to prevent infinite loops.
+**Bounded loops.** Three independent stop conditions: `MAX_EXECUTION_STEPS`,
+three consecutive tool errors, and the model answering in plain text.
 
-**Prompt structure separation** — Every prompt is built with three clearly separated sections: `system` (agent role and instructions), `tools` (available tool descriptions), and `user` (the task input). This mirrors production LLM prompt design patterns.
-
-**Validation at the schema layer** — Pydantic validators enforce non-empty strings, length limits, and pagination bounds before requests reach the service layer. Model selection validation is kept in the service layer where it can be logged as a business event.
-
-**Global error handlers** — SQLAlchemy errors and unexpected exceptions are caught centrally in `main.py` and returned as clean JSON responses. HTTPExceptions bypass these handlers and return their intended status codes.
+**Validation at the schema layer.** Pydantic validators enforce non-empty
+strings, length limits and pagination bounds before requests reach the
+service layer.
 
 ---
 
-## Known Limitations
+## Security model
 
-**SQLite ALTER COLUMN** — SQLite does not support `ALTER COLUMN` in migrations. If a column constraint needs changing on an existing table, the migration must be edited manually to remove the `alter_column` operation. Switching to PostgreSQL resolves this — only the `DATABASE_URL` in `.env` and the installed driver need updating.
+Agent platforms have an unusual threat model: the *model* decides what to
+call, and the model can be steered by text the operator does not control —
+a user's task, or a document that retrieval pulled into context (indirect
+prompt injection).
 
-**Mock LLM only** — No real LLM calls are made. The mock uses keyword matching and returns deterministic fake responses. Replacing it with a real provider requires implementing a new adapter in `core/mock_llm.py` that matches the same return interface.
+**Inbound tasks are screened.** `check_prompt_injection` rejects known
+injection and code-execution patterns with a 400 before anything runs.
 
-**SQLite concurrency** — SQLite has limited support for concurrent writes. For production workloads, PostgreSQL is recommended.
+**Tool arguments are screened too.** The model's tool arguments pass
+through the same detection before reaching a tool. A blocked call is
+recorded as a `tool_blocked` step and reported back to the model as an
+error, so the run continues without executing anything.
 
-**API key management** — API keys are loaded from environment variables for simplicity. In production these would be stored in a secrets manager (e.g. AWS Secrets Manager, HashiCorp Vault) and looked up dynamically.
+**Retrieved text is framed as data.** The system prompt states explicitly
+that tool output is data and carries no authority to change instructions.
+
+**No `eval`.** The calculator parses expressions to an AST and interprets
+an allowlist of arithmetic nodes (`core/safe_math.py`). `eval` with a
+stripped `__builtins__` is *not* a sandbox —
+`(1).__class__.__mro__[-1].__subclasses__()` walks straight out of it — and
+these arguments are model-written, so it was a remote code execution path.
+Expression length and exponent size are bounded to stop a single call from
+hanging a worker.
+
+These are defence in depth, not a guarantee. Pattern matching catches
+known phrasings, not novel ones.
+
+---
+
+## Known limitations
+
+**The `model` parameter is not a model selector.** The API accepts and
+records the model name, but execution always uses the configured
+`GROQ_MODEL`. `SUPPORTED_MODELS` is therefore derived from it, so the
+recorded value is at least truthful. Real multi-provider support needs an
+adapter layer.
+
+**Tools with no implementation are silently skipped.** `POST /tools`
+accepts any `name`, but only names in `TOOL_REGISTRY` become callable —
+anything else is logged and dropped at execution time rather than
+rejected at creation. Creating a tool named `web-search` (with a hyphen)
+produces an agent whose tool never runs, with no error at creation time.
+
+**RAG has no evaluation harness.** Query expansion and reranking are
+implemented but their contribution to retrieval quality is not measured.
+There are no recall@k numbers to justify the added latency and cost.
+
+**No usage accounting.** Token counts, latency and cost are not recorded
+per execution, so there is no per-tenant usage data — a real gap for a
+multi-tenant platform.
+
+**Synchronous endpoints.** Handlers are `def`, not `async def`, and an
+agent run can hold a worker thread for tens of seconds. The RAG pipeline
+makes one LLM call for expansion, N retrievals, a rerank and a final call,
+all blocking, with no caching.
+
+**SQLite.** Limited concurrent writes, and no `ALTER COLUMN` support in
+migrations. Switching to PostgreSQL only requires changing `DATABASE_URL`
+and installing the driver — the engine already adapts its connect args.
+
+**API keys in environment variables.** Fine for three fixed tenants,
+wrong for real tenancy: no rotation, no revocation, no per-tenant limits.
+Production would put these in a secrets manager with a lookup.
