@@ -20,6 +20,7 @@ from functools import lru_cache
 from typing import Any, Callable
 
 from app.config import GROQ_API_KEY, GROQ_MODELS, _require
+from app.core import usage
 from app.logger import get_logger
 
 logger = get_logger(__name__)
@@ -128,7 +129,7 @@ def chat_completion(
         kwargs["tool_choice"] = tool_choice
 
     try:
-        return client.chat.completions.create(**kwargs)
+        response = client.chat.completions.create(**kwargs)
     except Exception as e:
         if _is_model_not_found(e):
             logger.error(
@@ -141,6 +142,11 @@ def chat_completion(
                 f"the provider's catalogue."
             ) from e
         raise
+
+    # Single choke point for every LLM call in the app, which is what makes
+    # usage accounting complete without plumbing it through call signatures.
+    usage.record(model, response)
+    return response
 
 
 def _is_model_not_found(error: Exception) -> bool:

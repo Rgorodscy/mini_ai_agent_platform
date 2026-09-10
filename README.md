@@ -122,6 +122,7 @@ app/
     ├── guardrail.py          # Injection detection
     ├── prompt_builder.py     # Structured prompt assembly
     ├── safe_math.py          # AST-based arithmetic evaluator
+    ├── usage.py              # Token/cost accounting (ContextVar)
     ├── tool_implementations.py  # Tool registry
     ├── utils.py              # PDF/DOCX/text extraction
     └── rag/
@@ -133,7 +134,7 @@ app/
         ├── pipeline.py       # Orchestration (answer_from_knowledge)
         └── utils.py          # Embedder & ChromaDB clients
 
-tests/                        # 259 tests, no network access
+tests/                        # 290 tests, no network access
 alembic/                      # Database migrations
 .github/workflows/ci.yml      # Tests, migrations, image build
 Dockerfile                    # Multi-stage, CPU-only torch, non-root
@@ -216,7 +217,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-259 tests, ~18 seconds, **90% coverage**.
+290 tests, ~30 seconds, **91% coverage**.
 
 The suite is hermetic: an autouse fixture in `tests/conftest.py` replaces
 the LLM client, the embedding model and the cross-encoder with fakes for
@@ -369,6 +370,43 @@ curl -X POST http://localhost:8000/agents/{agent_id}/run \
 | `completed`         | The agent produced an answer                  |
 | `max_steps_reached` | Step budget spent without a final answer      |
 
+### Usage and cost
+
+```bash
+curl "http://localhost:8000/usage" -H "x-api-key: $API_KEY"
+
+# Optionally windowed
+curl "http://localhost:8000/usage?since=2026-09-01T00:00:00" \
+  -H "x-api-key: $API_KEY"
+```
+
+Returns tokens, LLM call count, cost and average latency for the calling
+tenant, broken down by model and by agent. The tenant comes from the API
+key, so there is no way to ask for another tenant's usage.
+
+```json
+{
+  "tenant_id": "tenant_a",
+  "executions": 1,
+  "prompt_tokens": 875,
+  "completion_tokens": 363,
+  "total_tokens": 1238,
+  "llm_calls": 4,
+  "cost_usd": null,
+  "avg_latency_ms": 4683,
+  "by_model": [{ "model": "openai/gpt-oss-120b", "total_tokens": 1238, "...": "..." }],
+  "by_agent": [{ "agent_id": "acf3647b-...", "total_tokens": 1238, "...": "..." }]
+}
+```
+
+Note `llm_calls: 4` for a run with two visible steps. Two calls came from
+the execution loop; the other two are the query expansion and the grounded
+generation that the RAG pipeline makes inside `search_knowledge`. See
+[Design decisions](#design-decisions) for how those are captured.
+
+`cost_usd` is `null` until `MODEL_PRICING` is configured — see
+[Known limitations](#known-limitations).
+
 ### Execution history
 
 ```bash
@@ -407,6 +445,21 @@ exposes `detect_injection` (pure) separately from `check_prompt_injection`
 (raises HTTP 400), so the same detection serves the API layer and the
 execution loop, which needs to block one tool call without failing the
 whole request.
+
+**Usage is collected in a ContextVar, not threaded through signatures.**
+One run makes several LLM calls, and not all of them are visible from the
+execution loop: `search_knowledge` triggers a query expansion and a grounded
+generation several layers down inside the RAG pipeline. Passing a usage
+object through every call would couple the RAG code to billing. Instead
+`core/usage.py` keeps the accumulator in a ContextVar and `chat_completion` —
+the single choke point for every LLM call — records into whichever scope is
+active. ContextVars are per-task and per-thread, so concurrent requests
+never share one, and the token is reset in a `finally` so an exception
+cannot leak an accumulator into the next request.
+
+**Cost is null, never zero, when a price is unknown.** A zero would read as
+"this run was free" on a billing page. Same rule in the aggregate: a tenant
+whose models are all unpriced gets `null`, not a confident `$0.00`.
 
 **The advertised model list is derived, not declared.** `supported_models()`
 is computed from the providers that have credentials configured, so the API
@@ -487,9 +540,11 @@ produces an agent whose tool never runs, with no error at creation time.
 implemented but their contribution to retrieval quality is not measured.
 There are no recall@k numbers to justify the added latency and cost.
 
-**No usage accounting.** Token counts, latency and cost are not recorded
-per execution, so there is no per-tenant usage data — a real gap for a
-multi-tenant platform.
+**No price table is bundled.** Token counts, latency and per-model usage
+are recorded on every execution and aggregated by `GET /usage`, but
+`cost_usd` stays null until `MODEL_PRICING` is configured. Shipping a price
+table would mean shipping numbers that go stale silently and bill tenants
+wrongly, so prices are a deployment's own responsibility.
 
 **Synchronous endpoints.** Handlers are `def`, not `async def`, and an
 agent run can hold a worker thread for tens of seconds. The RAG pipeline

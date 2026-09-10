@@ -140,17 +140,32 @@ class _Choice:
         self.message = message
 
 
+class _Usage:
+    def __init__(self, prompt_tokens, completion_tokens):
+        self.prompt_tokens = prompt_tokens
+        self.completion_tokens = completion_tokens
+        self.total_tokens = prompt_tokens + completion_tokens
+
+
 class _Response:
-    def __init__(self, message):
+    def __init__(self, message, usage=None):
         self.choices = [_Choice(message)]
+        self.usage = usage
 
 
-def make_llm_response(content=None, tool_calls=None):
+def make_llm_response(
+    content=None,
+    tool_calls=None,
+    prompt_tokens=100,
+    completion_tokens=20,
+):
     """
     Builds a Groq-shaped response.
 
     tool_calls is a list of (name, args_dict) tuples, or a raw string for
-    the malformed-arguments case.
+    the malformed-arguments case. Token counts default to non-zero values so
+    usage accounting is exercised by default; pass None for a provider that
+    reports no usage at all.
     """
     calls = None
     if tool_calls:
@@ -161,7 +176,13 @@ def make_llm_response(content=None, tool_calls=None):
             raw = args if isinstance(args, str) else json.dumps(args)
             calls.append(_ToolCall(f"call_{i}", name, raw))
 
-    return _Response(_Message(content=content, tool_calls=calls))
+    reported = None
+    if prompt_tokens is not None or completion_tokens is not None:
+        reported = _Usage(prompt_tokens or 0, completion_tokens or 0)
+
+    return _Response(
+        _Message(content=content, tool_calls=calls), usage=reported
+    )
 
 
 # --- Autouse isolation ---

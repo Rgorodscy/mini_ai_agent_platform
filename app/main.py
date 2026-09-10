@@ -11,6 +11,7 @@ from app.routers import (
     execution_router,
     knowledge_router,
     tool_router,
+    usage_router,
 )
 
 setup_logging()
@@ -38,6 +39,7 @@ app.include_router(tool_router.router)
 app.include_router(agent_router.router)
 app.include_router(execution_router.router)
 app.include_router(knowledge_router.router)
+app.include_router(usage_router.router)
 
 
 @app.exception_handler(SQLAlchemyError)

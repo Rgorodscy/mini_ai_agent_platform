@@ -7,11 +7,15 @@ from app.schemas.execution import (
     RunRequest,
     ExecutionResponse,
     PaginatedExecutionResponse,
+    UsageReportResponse,
 )
+from datetime import datetime
+
 from app.core.guardrail import check_prompt_injection
 from app.core.prompt_builder import build_prompt
 from app.core.execution_loop import run_execution_loop
 from app.core.llm import ProviderRejectedModel, supported_models
+from app.core.usage import track_usage
 from app.logger import get_logger
 
 logger = get_logger(__name__)
@@ -61,9 +65,12 @@ class ExecutionService:
         structured_prompt = build_prompt(agent, data.task)
 
         try:
-            result = run_execution_loop(
-                structured_prompt, agent, tenant_id, model=data.model
-            )
+            # Everything inside this block accrues to one usage total,
+            # including the LLM calls the RAG pipeline makes on its own.
+            with track_usage() as usage:
+                result = run_execution_loop(
+                    structured_prompt, agent, tenant_id, model=data.model
+                )
         except ProviderRejectedModel as e:
             # Configuration is wrong, not the request: say so plainly rather
             # than letting the global handler return an opaque 500.
@@ -74,7 +81,9 @@ class ExecutionService:
 
         logger.info(
             f"Execution complete | agent={agent_id} "
-            f"status={result['status']} steps={len(result['steps'])}"
+            f"status={result['status']} steps={len(result['steps'])} "
+            f"tokens={usage.total_tokens} calls={usage.llm_calls} "
+            f"latency_ms={usage.latency_ms} cost_usd={usage.cost_usd}"
         )
 
         execution = self.execution_repo.create(
@@ -86,9 +95,35 @@ class ExecutionService:
             steps=result["steps"],
             final_response=result["final_response"],
             status=result["status"],
+            usage=usage,
         )
 
         return ExecutionResponse.model_validate(execution)
+
+    def get_usage(
+        self,
+        tenant_id: str,
+        since: datetime | None = None,
+        until: datetime | None = None,
+    ) -> UsageReportResponse:
+        """Aggregated LLM consumption for one tenant."""
+        totals, by_model, by_agent = self.execution_repo.aggregate_usage(
+            tenant_id, since, until
+        )
+
+        logger.info(
+            f"Usage report | tenant={tenant_id} "
+            f"executions={totals['executions']} tokens={totals['total_tokens']}"
+        )
+
+        return UsageReportResponse(
+            tenant_id=tenant_id,
+            since=since,
+            until=until,
+            **totals,
+            by_model=by_model,
+            by_agent=by_agent,
+        )
 
     def get_history(
         self, agent_id: str, tenant_id: str, page: int = 1, page_size: int = 10

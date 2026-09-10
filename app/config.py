@@ -1,3 +1,4 @@
+import json
 import os
 from functools import lru_cache
 
@@ -66,6 +67,42 @@ def _model_list(key: str, default: str) -> tuple[str, ...]:
 
 
 GROQ_MODELS = _model_list("GROQ_MODELS", GROQ_MODEL)
+
+
+def _model_pricing() -> dict[str, dict[str, float]]:
+    """
+    Per-model prices in USD per million tokens, as JSON:
+      {"openai/gpt-oss-120b": {"input": 0.15, "output": 0.6}}
+
+    Deliberately empty by default. Bundling a price table would mean
+    shipping numbers that go stale silently and bill tenants wrongly —
+    prices are a deployment's own responsibility. A model with no entry
+    reports cost as null rather than zero.
+    """
+    raw = _optional("MODEL_PRICING", "")
+    if not raw:
+        return {}
+
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"MODEL_PRICING is not valid JSON: {e}") from e
+
+    pricing: dict[str, dict[str, float]] = {}
+    for model, price in parsed.items():
+        if not isinstance(price, dict) or {"input", "output"} - set(price):
+            raise RuntimeError(
+                f"MODEL_PRICING['{model}'] must have 'input' and 'output' "
+                f"keys, in USD per million tokens."
+            )
+        pricing[model] = {
+            "input": float(price["input"]),
+            "output": float(price["output"]),
+        }
+    return pricing
+
+
+MODEL_PRICING = _model_pricing()
 
 # --- RAG settings ---
 
