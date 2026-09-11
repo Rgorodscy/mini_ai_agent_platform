@@ -107,6 +107,18 @@ class FakeGroqClient:
         self._responses.extend(responses)
         return self
 
+    def reset(self):
+        """
+        Clears queued responses and recorded calls.
+
+        Needed when one test drives two runs: the last queued response is
+        reused rather than popped, so re-queuing without clearing leaves it
+        in front of the new expectations.
+        """
+        self._responses.clear()
+        self.calls.clear()
+        return self
+
     def create(self, **kwargs):
         self.calls.append(kwargs)
         if not self._responses:

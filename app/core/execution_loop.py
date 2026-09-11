@@ -313,6 +313,101 @@ def _build_graph():
 _agent_graph = _build_graph()
 
 
+def _initial_state(
+    prompt: dict, agent: Agent, tenant_id: str, model: str
+) -> ExecutionState:
+    active_tools, tool_map = _build_tools_for_agent(agent, tenant_id)
+
+    if not active_tools:
+        logger.warning(f"Agent has no implemented tools | agent={agent.name}")
+
+    logger.info(
+        f"Execution started | agent={agent.name} model={model} "
+        f"tools={[t['function']['name'] for t in active_tools]}"
+    )
+
+    return {
+        "messages": [
+            {"role": "system", "content": _build_system_prompt(agent)},
+            {"role": "user", "content": prompt.get("user", "")},
+        ],
+        "steps": [],
+        "active_tools": active_tools,
+        "tool_map": tool_map,
+        "consecutive_errors": 0,
+        "force_text": False,
+        "max_steps": MAX_EXECUTION_STEPS,
+        "model": model,
+    }
+
+
+def _final_response_from(messages: list) -> str | None:
+    """The answer is the last assistant message carrying text."""
+    for msg in reversed(messages):
+        if hasattr(msg, "role") and msg.role == "assistant" and msg.content:
+            return msg.content
+    return None
+
+
+def stream_execution_loop(
+    prompt: dict,
+    agent: Agent,
+    tenant_id: str = "",
+    model: str = GROQ_MODEL,
+):
+    """
+    Runs the loop, yielding each step as it happens.
+
+    Yields dicts: {"type": "step", "step": {...}} for every tool result,
+    error or blocked call, then {"type": "result", ...} carrying the same
+    payload run_execution_loop returns.
+
+    Built on LangGraph's .stream(), which emits one update per node
+    execution — so a caller sees a tool result the moment the tool returns
+    rather than after the whole run.
+    """
+    state = _initial_state(prompt, agent, tenant_id, model)
+
+    steps: list[dict] = []
+    messages: list = list(state["messages"])
+
+    for update in _agent_graph.stream(state):
+        for node_output in update.values():
+            if not isinstance(node_output, dict):
+                continue
+
+            messages.extend(node_output.get("messages") or [])
+
+            for step in node_output.get("steps") or []:
+                steps.append(step)
+                yield {"type": "step", "step": step}
+
+    final_response = _final_response_from(messages)
+
+    if final_response:
+        final_step = {
+            "step": len(steps) + 1,
+            "type": "final_response",
+            "content": final_response,
+        }
+        steps.append(final_step)
+        yield {"type": "step", "step": final_step}
+
+    status = "completed" if final_response else "max_steps_reached"
+
+    logger.info(
+        f"Execution done (streamed) | agent={agent.name} "
+        f"status={status} steps={len(steps)}"
+    )
+
+    yield {
+        "type": "result",
+        "steps": steps,
+        "final_response": final_response,
+        "status": status,
+    }
+
+
 def run_execution_loop(
     prompt: dict,
     agent: Agent,
@@ -329,38 +424,11 @@ def run_execution_loop(
 
     Returns {"steps", "final_response", "status"}.
     """
-    active_tools, tool_map = _build_tools_for_agent(agent, tenant_id)
+    state = _initial_state(prompt, agent, tenant_id, model)
 
-    if not active_tools:
-        logger.warning(f"Agent has no implemented tools | agent={agent.name}")
+    final_state = _agent_graph.invoke(state)
 
-    initial_state: ExecutionState = {
-        "messages": [
-            {"role": "system", "content": _build_system_prompt(agent)},
-            {"role": "user", "content": prompt.get("user", "")},
-        ],
-        "steps": [],
-        "active_tools": active_tools,
-        "tool_map": tool_map,
-        "consecutive_errors": 0,
-        "force_text": False,
-        "max_steps": MAX_EXECUTION_STEPS,
-        "model": model,
-    }
-
-    logger.info(
-        f"Execution started | agent={agent.name} model={model} "
-        f"tools={[t['function']['name'] for t in active_tools]}"
-    )
-
-    final_state = _agent_graph.invoke(initial_state)
-
-    # The answer is the last assistant message carrying text.
-    final_response = None
-    for msg in reversed(final_state["messages"]):
-        if hasattr(msg, "role") and msg.role == "assistant" and msg.content:
-            final_response = msg.content
-            break
+    final_response = _final_response_from(final_state["messages"])
 
     steps = final_state["steps"]
 

@@ -10,11 +10,13 @@ from app.schemas.execution import (
     UsageReportResponse,
 )
 from datetime import datetime
+from typing import Iterator
 
 from app.core.guardrail import check_prompt_injection
 from app.core.prompt_builder import build_prompt
-from app.core.execution_loop import run_execution_loop
+from app.core.execution_loop import run_execution_loop, stream_execution_loop
 from app.core.llm import ProviderRejectedModel, supported_models
+from app.core.stream import format_sse, run_in_thread
 from app.core.usage import track_usage
 from app.logger import get_logger
 
@@ -26,9 +28,19 @@ class ExecutionService:
         self.agent_repo = AgentRepository(db)
         self.execution_repo = ExecutionRepository(db)
 
-    def run_agent(
+    def _prepare_run(
         self, agent_id: str, tenant_id: str, data: RunRequest
-    ) -> ExecutionResponse:
+    ) -> tuple:
+        """
+        Validates a run request and builds its prompt.
+
+        Shared by both entry points so the streaming path cannot drift from
+        the blocking one on model validation, tenant scoping or the
+        guardrail. Everything here raises HTTPException, which matters for
+        streaming: these checks run before the response starts, so a bad
+        request still gets a real status code instead of a 200 whose body
+        opens with an error.
+        """
         logger.info(
             f"Run requested | agent={agent_id} tenant={tenant_id} "
             f"model={data.model}"
@@ -51,18 +63,21 @@ class ExecutionService:
         agent = self.agent_repo.get_by_id(agent_id, tenant_id)
         if not agent:
             logger.warning(
-                f"Agent not found | agent={agent_id} " f"tenant={tenant_id}"
+                f"Agent not found | agent={agent_id} tenant={tenant_id}"
             )
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Agent {agent_id} not found",
             )
 
-        # Guardrail check
         check_prompt_injection(data.task)
 
-        # Build structured prompt
-        structured_prompt = build_prompt(agent, data.task)
+        return agent, build_prompt(agent, data.task)
+
+    def run_agent(
+        self, agent_id: str, tenant_id: str, data: RunRequest
+    ) -> ExecutionResponse:
+        agent, structured_prompt = self._prepare_run(agent_id, tenant_id, data)
 
         try:
             # Everything inside this block accrues to one usage total,
@@ -99,6 +114,107 @@ class ExecutionService:
         )
 
         return ExecutionResponse.model_validate(execution)
+
+    def stream_agent(
+        self, agent_id: str, tenant_id: str, data: RunRequest
+    ) -> Iterator[str]:
+        """
+        Validates the request, then returns a generator of SSE frames.
+
+        Deliberately not a generator function itself. A generator body does
+        not run until the first next(), which for a StreamingResponse is
+        after the status and headers have already gone out — so validation
+        inside one would turn a 400 into a 200 whose body opens with an
+        error. Validating here and returning the generator keeps rejections
+        as real status codes.
+        """
+        agent, structured_prompt = self._prepare_run(agent_id, tenant_id, data)
+
+        return self._stream_events(
+            agent_id, tenant_id, data, agent, structured_prompt
+        )
+
+    def _stream_events(
+        self,
+        agent_id: str,
+        tenant_id: str,
+        data: RunRequest,
+        agent,
+        structured_prompt: dict,
+    ) -> Iterator[str]:
+        """
+        Emits one SSE frame per step, then a `done` frame.
+
+        The execution row is written when the run finishes, exactly as in the
+        non-streaming path — a stream the client abandons still leaves an
+        audit trail.
+        """
+
+        def produce(emit):
+            # One thread, one context: see core/stream.py for why this
+            # cannot be a plain generator.
+            with track_usage() as usage:
+                for event in stream_execution_loop(
+                    structured_prompt, agent, tenant_id, model=data.model
+                ):
+                    if event["type"] == "step":
+                        emit(("step", event["step"]))
+                    else:
+                        emit(("__result__", (event, usage)))
+
+        result = None
+        usage = None
+
+        try:
+            for name, payload in run_in_thread(produce):
+                if name == "__result__":
+                    result, usage = payload
+                else:
+                    yield format_sse(name, payload)
+        except ProviderRejectedModel as e:
+            logger.error(f"Provider rejected the model | {e}")
+            yield format_sse("error", {"detail": str(e)})
+            return
+        except BrokenPipeError:
+            logger.info(f"Client disconnected mid-stream | agent={agent_id}")
+            return
+        except Exception as e:
+            logger.error(f"Streamed execution failed | {e}", exc_info=True)
+            yield format_sse(
+                "error", {"detail": "An unexpected error occurred."}
+            )
+            return
+
+        if result is None:
+            return
+
+        execution = self.execution_repo.create(
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            model=data.model,
+            task=data.task,
+            structured_prompt=structured_prompt,
+            steps=result["steps"],
+            final_response=result["final_response"],
+            status=result["status"],
+            usage=usage,
+        )
+
+        logger.info(
+            f"Execution complete (streamed) | agent={agent_id} "
+            f"status={result['status']} tokens={usage.total_tokens} "
+            f"calls={usage.llm_calls} latency_ms={usage.latency_ms}"
+        )
+
+        yield format_sse(
+            "done",
+            {
+                "execution_id": execution.id,
+                "status": result["status"],
+                "final_response": result["final_response"],
+                **usage.as_dict(),
+            },
+        )
 
     def get_usage(
         self,

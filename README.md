@@ -165,6 +165,7 @@ app/
     ├── prompt_builder.py     # Structured prompt assembly
     ├── safe_math.py          # AST-based arithmetic evaluator
     ├── usage.py              # Token/cost accounting (ContextVar)
+    ├── stream.py             # SSE framing + producer thread
     ├── tool_implementations.py  # Tool registry
     ├── utils.py              # PDF/DOCX/text extraction
     └── rag/
@@ -176,7 +177,7 @@ app/
         ├── pipeline.py       # Orchestration (answer_from_knowledge)
         └── utils.py          # Embedder & ChromaDB clients
 
-tests/                        # 294 tests, no network access
+tests/                        # 319 tests, no network access
 evals/                        # Retrieval quality harness
 alembic/                      # Database migrations
 .github/workflows/ci.yml      # Tests, migrations, image build
@@ -260,7 +261,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-294 tests, ~25 seconds, **91% coverage**.
+319 tests, ~30 seconds, **91% coverage**.
 
 The suite is hermetic: an autouse fixture in `tests/conftest.py` replaces
 the LLM client, the embedding model and the cross-encoder with fakes for
@@ -413,6 +414,37 @@ curl -X POST http://localhost:8000/agents/{agent_id}/run \
 | `completed`         | The agent produced an answer                  |
 | `max_steps_reached` | Step budget spent without a final answer      |
 
+### Run an agent with streaming
+
+Same validation and the same persisted audit trail as `/run`, but each step
+arrives as it happens over Server-Sent Events:
+
+```bash
+curl -N -X POST http://localhost:8000/agents/{agent_id}/run/stream \
+  -H "x-api-key: $API_KEY" -H "Content-Type: application/json" \
+  -d '{"task": "What is the refund window?", "model": "openai/gpt-oss-120b"}'
+```
+
+```
+[ 4.80s] event: step
+         data: {"step":1,"type":"tool_result","tool":"search_knowledge", ...}
+[ 5.17s] event: step
+         data: {"step":2,"type":"final_response","content":"...30 days..."}
+[ 5.23s] event: done
+         data: {"execution_id":"06d37b57-...","status":"completed",
+                "total_tokens":1216,"llm_calls":4,"latency_ms":5231, ...}
+```
+
+| event   | meaning                                                      |
+| ------- | ------------------------------------------------------------ |
+| `step`  | a tool result, tool error, blocked call, or the final response |
+| `done`  | execution id, status and the run's token/cost/latency totals  |
+| `error` | the run failed after the stream had already started           |
+
+Validation runs before the response opens, so an unknown model or a rejected
+task still returns `400 application/json` rather than a `200` whose body
+begins with an error event.
+
 ### Usage and cost
 
 ```bash
@@ -499,6 +531,24 @@ the single choke point for every LLM call — records into whichever scope is
 active. ContextVars are per-task and per-thread, so concurrent requests
 never share one, and the token is reset in a `finally` so an exception
 cannot leak an accumulator into the next request.
+
+**Streaming runs in a producer thread, not a bare generator.** Two reasons,
+and the first is a trap. Starlette iterates a synchronous generator by
+handing each `next()` to a worker thread with a *copy* of the caller's
+context, so a `ContextVar.set()` made before one yield is invisible after
+it — wrapping a generator body in `track_usage()` would silently measure
+nothing. Running the whole execution in one thread gives it one context for
+its entire life. It also decouples the agent from how fast the client reads:
+the queue is bounded, so a slow reader applies backpressure instead of
+letting events accumulate without limit.
+
+**The streaming entry point is not itself a generator.** A generator body
+does not run until the first `next()`, which for a `StreamingResponse` is
+after the status line and headers have gone out. Validation inside one turns
+a 400 into a 200 whose body opens with an error. `stream_agent` therefore
+validates eagerly and *returns* a generator, and both entry points share
+`_prepare_run` so they cannot drift apart on model validation, tenant
+scoping or the guardrail.
 
 **Cost is null, never zero, when a price is unknown.** A zero would read as
 "this run was free" on a billing page. Same rule in the aggregate: a tenant
@@ -590,10 +640,18 @@ are recorded on every execution and aggregated by `GET /usage`, but
 table would mean shipping numbers that go stale silently and bill tenants
 wrongly, so prices are a deployment's own responsibility.
 
-**Synchronous endpoints.** Handlers are `def`, not `async def`, and an
-agent run can hold a worker thread for tens of seconds. The RAG pipeline
-makes one LLM call for expansion, N retrievals, a rerank and a final call,
-all blocking, with no caching.
+**The work is still blocking, even when streamed.** `/run/stream` gives the
+client incremental results, but the provider calls underneath are
+synchronous: a run occupies a worker thread for its whole duration, and the
+RAG pipeline makes an expansion call, N retrievals, a rerank and a final
+call one after another with no caching. Streaming improves perceived latency
+and frees the client from waiting; it does not improve throughput. An async
+provider client is the change that would.
+
+**Token-level streaming is not implemented.** Events arrive per step, not
+per token — the final response appears in one frame once the model finishes
+composing it. Passing `stream=True` to the provider and relaying deltas is
+the natural next step.
 
 **SQLite in local development.** Limited concurrent writes, and no
 `ALTER COLUMN` support in migrations. The Docker setup runs Postgres, and
