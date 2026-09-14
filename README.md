@@ -14,11 +14,14 @@ cp .env.example .env   # add your GROQ_API_KEY
 docker compose up
 ```
 
+Then open **http://localhost:8000** and connect with a tenant key from `.env`.
+
 ---
 
 ## Table of Contents
 
 - [What it does](#what-it-does)
+- [The console](#the-console)
 - [Architecture](#architecture)
 - [Project structure](#project-structure)
 - [Setup](#setup)
@@ -43,6 +46,39 @@ docker compose up
 5. Every step of every run is persisted and queryable.
 
 No data, no vector, and no execution is ever visible across tenants.
+
+---
+
+## The console
+
+The API ships with a web console at `/ui/` — no build step, no separate
+frontend, served by the same container. Connect with a tenant key and you
+can create an agent, add documents to its knowledge base, and run it:
+each step appears the moment it completes, then the run's latency, LLM
+calls, tokens and cost.
+
+It is a thin client over the public API — everything it does goes through
+the same endpoints documented below, with the same auth and tenant scoping.
+
+Three details that are easy to get wrong in a page like this:
+
+- **Model output is rendered as text, never as HTML.** An answer or a tool
+  result can carry markup — a retrieved document is untrusted input — so
+  every server value reaches the page through `textContent`. A test fails
+  the build if an HTML-parsing sink appears in the script. A restrictive
+  Content-Security-Policy (no inline script, `connect-src 'self'`, no
+  framing) is the second layer, scoped to the console so it never wraps the
+  API.
+- **Streaming uses `fetch`, not `EventSource`.** `EventSource` can only send
+  GET, and a run is a POST with a body. The page reads the response stream
+  with an incremental SSE parser that tolerates frames — and `\r\n` pairs —
+  split across network chunks.
+- **Stop is honest about what it does.** Stopping closes the stream, but the
+  run continues on the server and is still recorded and billed; the console
+  says exactly that rather than implying the run was cancelled.
+
+The API key is kept in `sessionStorage` — it survives a reload, is gone when
+the tab closes, and never appears in a URL.
 
 ---
 
@@ -158,6 +194,7 @@ app/
 ├── repositories/             # Database queries (always tenant-scoped)
 ├── services/                 # Business logic
 ├── routers/                  # HTTP endpoints
+├── static/                   # Web console (HTML/CSS/JS, no build step)
 └── core/                     # Agent execution — no HTTP, no DB
     ├── execution_loop.py     # LangGraph state machine
     ├── llm.py                # Provider registry and routing
@@ -177,7 +214,7 @@ app/
         ├── pipeline.py       # Orchestration (answer_from_knowledge)
         └── utils.py          # Embedder & ChromaDB clients
 
-tests/                        # 324 tests, no network access
+tests/                        # 346 tests, no network access
 evals/                        # Retrieval quality harness
 alembic/                      # Database migrations
 .github/workflows/ci.yml      # Tests, migrations, image build
@@ -261,7 +298,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-324 tests, ~30 seconds, **92% coverage**.
+346 tests, ~35 seconds, **92% coverage**.
 
 The suite is hermetic: an autouse fixture in `tests/conftest.py` replaces
 the LLM client, the embedding model and the cross-encoder with fakes for
@@ -299,12 +336,13 @@ Keys come from `.env` and map to tenants:
 
 Tools are references to implementations that ship with the platform. A
 tool only becomes callable if its `name` matches an entry in
-`TOOL_REGISTRY` — currently:
-
-`calculator`, `get_weather`, `search_knowledge`, `summarize`, `think`,
-`web_search`
+`TOOL_REGISTRY`. Ask the API which names those are rather than hardcoding
+them:
 
 ```bash
+# Names with an implementation, and what each does
+curl http://localhost:8000/tools/available -H "x-api-key: $API_KEY"
+
 # Create
 curl -X POST http://localhost:8000/tools \
   -H "x-api-key: $API_KEY" -H "Content-Type: application/json" \
@@ -359,6 +397,16 @@ curl -X POST http://localhost:8000/knowledge \
 ```
 
 Re-posting the same `doc_id` replaces that document's chunks.
+
+### Models
+
+```bash
+curl http://localhost:8000/models -H "x-api-key: $API_KEY"
+# {"default": "openai/gpt-oss-120b", "models": ["openai/gpt-oss-120b"]}
+```
+
+Every name listed is one a run will accept: the list is derived from the
+providers that have credentials configured, not hardcoded.
 
 ### Run an agent
 
@@ -635,11 +683,14 @@ Anthropic means writing an adapter and a registry entry — and translating
 to and from the OpenAI chat-completions shape this codebase assumes, which
 not every provider SDK speaks natively.
 
-**Tools with no implementation are silently skipped.** `POST /tools`
-accepts any `name`, but only names in `TOOL_REGISTRY` become callable —
-anything else is logged and dropped at execution time rather than
-rejected at creation. Creating a tool named `web-search` (with a hyphen)
-produces an agent whose tool never runs, with no error at creation time.
+**Tools with no implementation are still accepted.** `GET /tools/available`
+now lists the names that have an implementation, and the console only
+offers those — but `POST /tools` itself still accepts any `name`, and
+anything outside the registry is logged and dropped at execution time
+rather than rejected at creation. An API client that creates `web-search`
+(with a hyphen) still gets an agent whose tool never runs. Rejecting
+unknown names with a 422 is the remaining fix; it was left out because it
+would break any tenant that already has such rows.
 
 **The eval set is too small to generalise.** `evals/` measures retrieval
 quality, but 20 documents and 22 queries cannot separate configurations

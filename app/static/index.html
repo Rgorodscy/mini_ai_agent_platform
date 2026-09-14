@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Agent Console — Mini Agent Platform</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <div>
+          <p class="brand-name">Agent Console</p>
+          <p class="brand-sub">Mini Agent Platform</p>
+        </div>
+      </div>
+
+      <form id="connect-form" class="connect" autocomplete="off">
+        <label class="visually-hidden" for="api-key">Tenant API key</label>
+        <input
+          id="api-key"
+          type="password"
+          placeholder="Tenant API key"
+          spellcheck="false"
+          required
+        />
+        <button type="submit" class="button button-primary">Connect</button>
+      </form>
+
+      <div id="session" class="session" hidden>
+        <span class="status-dot" aria-hidden="true"></span>
+        <span>Tenant</span>
+        <code id="tenant-id"></code>
+        <button id="disconnect" type="button" class="button button-ghost">
+          Disconnect
+        </button>
+      </div>
+    </header>
+
+    <p id="banner" class="banner" role="alert" hidden></p>
+
+    <section id="welcome" class="welcome">
+      <h1>Run an agent and watch it think.</h1>
+      <p>
+        Connect with a tenant API key from your <code>.env</code>. Everything
+        you see — agents, documents, runs and usage — is scoped to that tenant.
+      </p>
+      <ol class="welcome-steps">
+        <li>Create an agent and give it <code>search_knowledge</code>.</li>
+        <li>Add a document to the tenant's knowledge base.</li>
+        <li>Ask a question and watch each step stream in.</li>
+      </ol>
+    </section>
+
+    <div id="workspace" class="workspace" hidden>
+      <aside class="sidebar">
+        <section class="panel" aria-labelledby="agents-heading">
+          <div class="panel-head">
+            <h2 id="agents-heading">Agents</h2>
+            <button id="refresh-agents" type="button" class="button button-ghost button-small">
+              Refresh
+            </button>
+          </div>
+          <ul id="agent-list" class="agent-list"></ul>
+          <p id="agents-empty" class="muted" hidden>No agents yet.</p>
+
+          <details id="new-agent" class="disclosure">
+            <summary>New agent</summary>
+            <form id="agent-form" class="stack">
+              <label>
+                Name
+                <input name="name" required maxlength="200" placeholder="Docs Agent" />
+              </label>
+              <label>
+                Role
+                <input name="role" required maxlength="200" placeholder="a support agent" />
+              </label>
+              <label>
+                Description
+                <textarea
+                  name="description"
+                  required
+                  maxlength="200"
+                  rows="2"
+                  placeholder="Answers questions from internal documentation"
+                ></textarea>
+              </label>
+              <fieldset>
+                <legend>Tools</legend>
+                <div id="tool-options" class="tool-options"></div>
+              </fieldset>
+              <button type="submit" class="button button-primary">Create agent</button>
+            </form>
+          </details>
+        </section>
+
+        <section class="panel" aria-labelledby="knowledge-heading">
+          <div class="panel-head">
+            <h2 id="knowledge-heading">Knowledge</h2>
+          </div>
+          <form id="knowledge-form" class="stack">
+            <label>
+              Document id
+              <input name="doc_id" required placeholder="refund-policy" />
+            </label>
+            <label>
+              Text
+              <textarea
+                name="text"
+                rows="4"
+                placeholder="Customers may return any item within 30 days of delivery…"
+              ></textarea>
+            </label>
+            <label>
+              or a file <span class="muted">(PDF, DOCX, TXT)</span>
+              <input name="file" type="file" accept=".pdf,.docx,.txt" />
+            </label>
+            <button type="submit" class="button">Add to knowledge base</button>
+            <p id="knowledge-status" class="muted" role="status"></p>
+          </form>
+        </section>
+      </aside>
+
+      <main class="main">
+        <section class="panel" aria-labelledby="run-heading">
+          <div class="panel-head">
+            <h2 id="run-heading">Run</h2>
+            <span id="run-agent" class="muted">Select an agent</span>
+          </div>
+
+          <form id="run-form" class="run-form">
+            <label class="grow">
+              Task
+              <textarea
+                id="task"
+                required
+                maxlength="2000"
+                rows="3"
+                placeholder="What is the refund window?"
+              ></textarea>
+            </label>
+            <div class="run-controls">
+              <label>
+                Model
+                <select id="model"></select>
+              </label>
+              <div class="run-buttons">
+                <button id="run" type="submit" class="button button-primary" disabled>
+                  Run
+                </button>
+                <button id="stop" type="button" class="button" hidden>Stop</button>
+              </div>
+            </div>
+          </form>
+        </section>
+
+        <section class="panel timeline-panel" aria-labelledby="timeline-heading">
+          <div class="panel-head">
+            <h2 id="timeline-heading">Steps</h2>
+            <span id="run-clock" class="clock" aria-live="off"></span>
+          </div>
+          <ol id="timeline" class="timeline" aria-live="polite"></ol>
+          <p id="timeline-empty" class="muted">
+            Steps appear here as the agent works — each tool call the moment it
+            returns, not after the run ends.
+          </p>
+          <div id="run-summary" class="summary" hidden></div>
+        </section>
+
+        <section class="panel" aria-labelledby="usage-heading">
+          <div class="panel-head">
+            <h2 id="usage-heading">Tenant usage</h2>
+            <button id="refresh-usage" type="button" class="button button-ghost button-small">
+              Refresh
+            </button>
+          </div>
+          <dl id="usage" class="metrics"></dl>
+        </section>
+      </main>
+    </div>
+  </body>
+</html>
