@@ -166,6 +166,16 @@ pulls MRR back to the un-expanded 0.894 while costing the most latency of
 any configuration. The shipped default (`+both`) is the worst trade in this
 table on this corpus.
 
+**The expansion rows move between runs.** Expansion calls an LLM, which
+is not deterministic. A second run gave `+expansion` recall@1 0.95 and MRR
+0.966 (the table shows the first); the baseline and `+rerank` rows, which
+make no LLM call, reproduced exactly. The conclusion held in both runs, but
+a single run of an LLM-dependent configuration is a sample, not a
+measurement — averaging several is the honest way to report it. That second
+run also hit the case the expansion fallback exists for: the model refused
+to rewrite one query (*"I'm sorry, but I can't provide that information"*),
+and the pipeline searched with the original query instead of failing.
+
 **These numbers do not generalise.** 22 queries is far too few for a 0.09
 recall difference — that is two queries — to be significant, and baseline
 recall@3 is already 1.00, so a 20-document corpus barely discriminates
