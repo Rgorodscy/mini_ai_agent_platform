@@ -1,6 +1,7 @@
 from unittest.mock import MagicMock
 
-from app.config import MAX_EXECUTION_STEPS
+from app.config import MAX_EXECUTION_STEPS, MAX_MODEL_CALLS
+from app.core import execution_loop
 from app.core.execution_loop import run_execution_loop
 from tests.conftest import make_llm_response
 
@@ -172,6 +173,46 @@ def test_consecutive_errors_stop_the_loop(fake_llm):
 
     error_steps = [s for s in result["steps"] if s["type"] == "tool_error"]
     assert len(error_steps) <= 3
+
+
+def test_model_call_budget_stops_a_model_that_only_thinks(fake_llm):
+    """
+    Regression: `think` records no step and never errors, so neither the
+    step budget nor the error streak could end this run. It looped until
+    LangGraph's recursion limit raised.
+    """
+    fake_llm.queue(
+        make_llm_response(tool_calls=[("think", {"reasoning": "hmm"})])
+    )
+
+    result = run_execution_loop(
+        make_prompt("think forever"), make_agent(["think"])
+    )
+
+    assert result["status"] == "max_steps_reached"
+    assert result["final_response"] is None
+    assert len(fake_llm.calls) == MAX_MODEL_CALLS
+
+
+def test_recursion_backstop_does_not_preempt_a_large_budget(
+    fake_llm, monkeypatch
+):
+    """
+    The recursion limit is derived from the budget and must never fire
+    before it. Guards the 2-nodes-per-turn arithmetic in _graph_config:
+    adding a node to the loop without revisiting it fails here.
+    """
+    monkeypatch.setattr(execution_loop, "MAX_MODEL_CALLS", 30)
+    fake_llm.queue(
+        make_llm_response(tool_calls=[("think", {"reasoning": "hmm"})])
+    )
+
+    result = run_execution_loop(
+        make_prompt("think forever"), make_agent(["think"])
+    )
+
+    assert result["status"] == "max_steps_reached"
+    assert len(fake_llm.calls) == 30
 
 
 # --- Injection screening on tool arguments ---

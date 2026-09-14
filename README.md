@@ -103,16 +103,16 @@ Router (HTTP)  →  Service (business logic)  →  Repository (database)
    │    └──────────────┘        │
    │            │               │  no tool calls
    │            │ tool calls    │  · step budget exhausted
-   │            ▼               │  · 3 consecutive errors
-   │    ┌──────────────┐        ▼
-   └────│execute_tools │      END
-        └──────────────┘
+   │            ▼               │  · model call budget exhausted
+   │    ┌──────────────┐        │  · 3 consecutive errors
+   └────│execute_tools │        ▼
+        └──────────────┘      END
 ```
 
 Each cycle appends to two accumulating channels: `messages` (what the
 model sees) and `steps` (the audit trail the API returns). The loop is
-bounded on three axes — step count, consecutive errors, and the model
-choosing to answer in plain text.
+bounded on four axes — step count, model calls, consecutive errors, and
+the model choosing to answer in plain text.
 
 ### The RAG pipeline
 
@@ -467,10 +467,10 @@ curl -X POST http://localhost:8000/agents/{agent_id}/run \
 
 **Statuses:**
 
-| Status              | Meaning                                       |
-| ------------------- | --------------------------------------------- |
-| `completed`         | The agent produced an answer                  |
-| `max_steps_reached` | Step budget spent without a final answer      |
+| Status              | Meaning                                                |
+| ------------------- | ------------------------------------------------------ |
+| `completed`         | The agent produced an answer                           |
+| `max_steps_reached` | Step or model call budget spent without a final answer |
 
 ### Run an agent with streaming
 
@@ -633,8 +633,16 @@ execution row is the model that actually ran.
 prompt, every step with tool inputs and outputs, and the final response —
 full auditability of what the agent actually did.
 
-**Bounded loops.** Three independent stop conditions: `MAX_EXECUTION_STEPS`,
-three consecutive tool errors, and the model answering in plain text.
+**Bounded loops.** Four independent stop conditions: `MAX_EXECUTION_STEPS`,
+`MAX_MODEL_CALLS`, three consecutive tool errors, and the model answering in
+plain text. The model call budget exists because the step budget depends on
+which tool runs: `think` records no step and never errors, so a model that
+only thought used to loop until LangGraph's recursion limit raised — about
+5,000 model calls at the default limit. The call budget ends that run with a
+status instead. LangGraph's `recursion_limit` is still set, derived from the
+budget (two nodes per turn), as a backstop that should never be the one to
+fire. Both budgets report `max_steps_reached`, so the API contract did not
+change.
 
 **Validation at the schema layer.** Pydantic validators enforce non-empty
 strings, length limits and pagination bounds before requests reach the

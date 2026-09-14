@@ -27,8 +27,29 @@ def _optional(key: str, default: str) -> str:
     return (os.getenv(key) or "").strip() or default
 
 
+def _positive_int(key: str, default: str) -> int:
+    """
+    Reads a setting that must be a whole number of at least 1.
+
+    Rejected at import rather than at first use: a zero budget does not
+    fail until a run starts, and then it fails every run.
+    """
+    raw = _optional(key, default)
+    try:
+        value = int(raw)
+    except ValueError:
+        raise RuntimeError(f"{key} must be a whole number, got {raw!r}.")
+    if value < 1:
+        raise RuntimeError(f"{key} must be at least 1, got {value}.")
+    return value
+
+
 DATABASE_URL = _require("DATABASE_URL")
 MAX_EXECUTION_STEPS = int(os.getenv("MAX_EXECUTION_STEPS", "5"))
+# Model turns per run. A turn that retries after a malformed tool call still
+# counts once: this bounds the agent's reasoning, while actual provider calls
+# are measured by usage accounting.
+MAX_MODEL_CALLS = _positive_int("MAX_MODEL_CALLS", "5")
 API_KEYS: dict[str, str] = {
     _require("API_KEY_TENANT_A"): "tenant_a",
     _require("API_KEY_TENANT_B"): "tenant_b",
