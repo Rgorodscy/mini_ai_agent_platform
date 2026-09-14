@@ -7,7 +7,7 @@ calls a real LLM, executes tools, and records a full audit trail.
 
 Built with FastAPI, SQLAlchemy, LangGraph, Groq and ChromaDB.
 
-![CI](https://github.com/rgorodscy/mini_agent_platform/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/Rgorodscy/mini_ai_agent_platform/actions/workflows/ci.yml/badge.svg)
 
 ```bash
 cp .env.example .env   # add your GROQ_API_KEY
