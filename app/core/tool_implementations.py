@@ -33,11 +33,16 @@ def make_search_knowledge(tenant_id: str):
 
     def search_knowledge(query: str) -> str:
         from app.core.rag import answer_from_knowledge
+        from app.core.rag.pipeline import NO_RESULTS
 
         try:
             results = answer_from_knowledge(query, tenant_id)
-            if not results:
-                return f"No results found for: '{query}'"
+            # The pipeline signals "nothing found" with NO_RESULTS, not an
+            # empty string. Checking only for emptiness wrapped that message
+            # in "Relevant knowledge for ...", handing the model a
+            # contradiction: relevant knowledge, then no relevant document.
+            if not results or results == NO_RESULTS:
+                return f"No relevant documents found for: '{query}'"
             return f"Relevant knowledge for '{query}':\n\n{results}"
         except Exception as e:
             logger.error(

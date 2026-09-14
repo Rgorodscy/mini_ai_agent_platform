@@ -235,3 +235,37 @@ def test_both_stages_disabled_still_answers(monkeypatch, fake_llm):
     fake_llm.queue(make_llm_response(content="Within 30 days."))
 
     assert answer_from_knowledge("refunds", "t1") == "Within 30 days."
+
+
+# --- The tool the model actually calls ---
+
+
+def test_search_knowledge_reports_no_results_without_contradiction(fake_llm):
+    """
+    Regression: with nothing indexed, the tool returned
+    "Relevant knowledge for '...':\n\nNo relevant document found" — telling
+    the model it had relevant knowledge and then that it had none. Found by
+    a real run in which one tenant searched another tenant's documents.
+    """
+    from app.core.tool_implementations import make_search_knowledge
+
+    fake_llm.queue(json_response('["refund window"]'))
+
+    result = make_search_knowledge("empty-tenant")("refund window")
+
+    assert "Relevant knowledge" not in result
+    assert result == "No relevant documents found for: 'refund window'"
+
+
+def test_search_knowledge_wraps_a_real_answer(fake_llm):
+    from app.core.tool_implementations import make_search_knowledge
+
+    ingest("Refunds within 30 days.", tenant_id="t1", doc_id="policy")
+    fake_llm.queue(
+        json_response('["refunds"]'),
+        make_llm_response(content="Within 30 days."),
+    )
+
+    result = make_search_knowledge("t1")("refunds")
+
+    assert result == "Relevant knowledge for 'refunds':\n\nWithin 30 days."

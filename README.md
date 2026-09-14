@@ -224,7 +224,7 @@ app/
         ├── pipeline.py       # Orchestration (answer_from_knowledge)
         └── utils.py          # Embedder & ChromaDB clients
 
-tests/                        # 346 tests, no network access
+tests/                        # 348 tests, no network access
 evals/                        # Retrieval quality harness
 alembic/                      # Database migrations
 .github/workflows/ci.yml      # Tests, migrations, image build
@@ -308,7 +308,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-346 tests, ~35 seconds, **92% coverage**.
+348 tests, ~40 seconds, **92% coverage**.
 
 The suite is hermetic: an autouse fixture in `tests/conftest.py` replaces
 the LLM client, the embedding model and the cross-encoder with fakes for
