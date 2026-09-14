@@ -4,7 +4,7 @@ from typing import Annotated, Any, TypedDict
 
 from langgraph.graph import END, StateGraph
 
-from app.config import GROQ_MODEL, MAX_EXECUTION_STEPS
+from app.config import GROQ_MODEL, MAX_EXECUTION_STEPS, MAX_MODEL_CALLS
 from app.core.guardrail import detect_injection
 from app.core.llm import chat_completion
 from app.core.tool_implementations import TOOL_REGISTRY
@@ -27,6 +27,8 @@ class ExecutionState(TypedDict):
     force_text: bool
     max_steps: int
     model: str
+    model_calls: int
+    max_model_calls: int
 
 
 def _build_tools_for_agent(
@@ -102,6 +104,11 @@ def _build_system_prompt(agent: Agent) -> str:
 
 def call_model(state: ExecutionState) -> dict:
     tool_choice = "none" if state.get("force_text") else "auto"
+    # Counted once per node execution, whichever path below returns: the
+    # budget in should_continue is the only limit that does not depend on
+    # which tool the model picks. `think` records no step, so the step
+    # budget alone let a model that only thinks loop indefinitely.
+    model_call_count = state.get("model_calls", 0) + 1
 
     def _call(choice):
         return chat_completion(
@@ -113,7 +120,11 @@ def call_model(state: ExecutionState) -> dict:
 
     try:
         response = _call(tool_choice)
-        return {"messages": [response.choices[0].message], "force_text": False}
+        return {
+            "messages": [response.choices[0].message],
+            "force_text": False,
+            "model_calls": model_call_count,
+        }
     except Exception as e:
         err = str(e)
         # Groq rejects the request outright when the model emits a tool call
@@ -125,6 +136,7 @@ def call_model(state: ExecutionState) -> dict:
                 return {
                     "messages": [response.choices[0].message],
                     "force_text": False,
+                    "model_calls": model_call_count,
                 }
             except Exception:
                 logger.warning("Retry failed — answering without tools.")
@@ -132,6 +144,7 @@ def call_model(state: ExecutionState) -> dict:
                 return {
                     "messages": [response.choices[0].message],
                     "force_text": False,
+                    "model_calls": model_call_count,
                 }
         raise
 
@@ -285,6 +298,10 @@ def should_continue(state: ExecutionState) -> str:
         logger.warning("Stopping — step budget exhausted.")
         return END
 
+    if state.get("model_calls", 0) >= state["max_model_calls"]:
+        logger.warning("Stopping — model call budget exhausted.")
+        return END
+
     last = state["messages"][-1]
     if hasattr(last, "role") and last.role == "assistant":
         if not last.tool_calls:
@@ -313,6 +330,20 @@ def _build_graph():
 _agent_graph = _build_graph()
 
 
+def _graph_config(state: ExecutionState) -> dict:
+    """
+    LangGraph's recursion_limit, derived from the model call budget.
+
+    The budget checked in should_continue is what ends a run gracefully;
+    this is the backstop for when that check is broken, and it raises
+    instead of returning a status. It must never fire first: each turn runs
+    two nodes (call_model, execute_tools) and the last turn stops after
+    call_model, so N calls take 2N - 1 node executions. Adding a node to the
+    loop means revisiting this.
+    """
+    return {"recursion_limit": state["max_model_calls"] * 2}
+
+
 def _initial_state(
     prompt: dict, agent: Agent, tenant_id: str, model: str
 ) -> ExecutionState:
@@ -338,6 +369,8 @@ def _initial_state(
         "force_text": False,
         "max_steps": MAX_EXECUTION_STEPS,
         "model": model,
+        "model_calls": 0,
+        "max_model_calls": MAX_MODEL_CALLS,
     }
 
 
@@ -371,7 +404,7 @@ def stream_execution_loop(
     steps: list[dict] = []
     messages: list = list(state["messages"])
 
-    for update in _agent_graph.stream(state):
+    for update in _agent_graph.stream(state, config=_graph_config(state)):
         for node_output in update.values():
             if not isinstance(node_output, dict):
                 continue
@@ -426,7 +459,7 @@ def run_execution_loop(
     """
     state = _initial_state(prompt, agent, tenant_id, model)
 
-    final_state = _agent_graph.invoke(state)
+    final_state = _agent_graph.invoke(state, config=_graph_config(state))
 
     final_response = _final_response_from(final_state["messages"])
 

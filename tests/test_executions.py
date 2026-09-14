@@ -1,5 +1,6 @@
 import pytest
 
+from app.config import MAX_MODEL_CALLS
 from tests.conftest import make_llm_response
 
 
@@ -205,6 +206,19 @@ def test_max_steps_reached_is_persisted(client, agent, fake_llm):
 
     assert body["status"] == "max_steps_reached"
     assert body["final_response"] is None
+
+
+def test_model_call_budget_ending_a_run_is_persisted(client, agent, fake_llm):
+    """A model that only thinks records no steps; the call budget stops it."""
+    fake_llm.queue(
+        make_llm_response(tool_calls=[("think", {"reasoning": "hmm"})])
+    )
+
+    body = run_agent(client, agent["id"], task="loop").json()
+
+    assert body["status"] == "max_steps_reached"
+    assert body["final_response"] is None
+    assert len(fake_llm.calls) == MAX_MODEL_CALLS
 
 
 # --- History ---

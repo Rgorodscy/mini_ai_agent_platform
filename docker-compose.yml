@@ -25,6 +25,7 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://agent:${POSTGRES_PASSWORD:-agent-local-dev}@db:5432/agent_platform
       MAX_EXECUTION_STEPS: ${MAX_EXECUTION_STEPS:-5}
+      MAX_MODEL_CALLS: ${MAX_MODEL_CALLS:-5}
       API_KEY_TENANT_A: ${API_KEY_TENANT_A:?set API_KEY_TENANT_A in .env}
       API_KEY_TENANT_B: ${API_KEY_TENANT_B:?set API_KEY_TENANT_B in .env}
       API_KEY_TENANT_C: ${API_KEY_TENANT_C:?set API_KEY_TENANT_C in .env}

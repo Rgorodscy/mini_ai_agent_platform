@@ -9,7 +9,40 @@ exercise what a real deployment passes in.
 
 import pytest
 
-from app.config import _model_list, validate_settings
+from app.config import _model_list, _positive_int, validate_settings
+
+# --- Positive integer settings ---
+
+
+def test_positive_int_reads_the_value(monkeypatch):
+    monkeypatch.setenv("TEST_BUDGET", "12")
+
+    assert _positive_int("TEST_BUDGET", "5") == 12
+
+
+def test_positive_int_empty_variable_uses_the_default(monkeypatch):
+    monkeypatch.setenv("TEST_BUDGET", "")
+
+    assert _positive_int("TEST_BUDGET", "5") == 5
+
+
+def test_positive_int_rejects_zero(monkeypatch):
+    """
+    Regression: MAX_MODEL_CALLS=0 derived a recursion_limit of 0, which
+    LangGraph rejects — the app booted and then failed every run.
+    """
+    monkeypatch.setenv("TEST_BUDGET", "0")
+
+    with pytest.raises(RuntimeError, match="at least 1"):
+        _positive_int("TEST_BUDGET", "5")
+
+
+def test_positive_int_rejects_a_non_number(monkeypatch):
+    monkeypatch.setenv("TEST_BUDGET", "five")
+
+    with pytest.raises(RuntimeError, match="whole number"):
+        _positive_int("TEST_BUDGET", "5")
+
 
 # --- Model list parsing ---
 

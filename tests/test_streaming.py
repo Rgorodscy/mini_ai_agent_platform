@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-from app.config import GROQ_MODEL
+from app.config import GROQ_MODEL, MAX_MODEL_CALLS
 from app.core.stream import QUEUE_SIZE, format_sse, run_in_thread
 from tests.conftest import make_llm_response
 
@@ -235,6 +235,21 @@ def test_stream_reports_max_steps_reached(client, agent, fake_llm):
 
     assert done["status"] == "max_steps_reached"
     assert done["final_response"] is None
+
+
+def test_stream_model_call_budget_stops_a_model_that_only_thinks(
+    client, agent, fake_llm
+):
+    """The streaming path runs the same graph and must hit the same budget."""
+    fake_llm.queue(
+        make_llm_response(tool_calls=[("think", {"reasoning": "hmm"})])
+    )
+
+    done = dict(parse_sse(stream(client, agent["id"]).text))["done"]
+
+    assert done["status"] == "max_steps_reached"
+    assert done["final_response"] is None
+    assert len(fake_llm.calls) == MAX_MODEL_CALLS
 
 
 def test_stream_emits_blocked_tool_calls(client, agent, fake_llm):
