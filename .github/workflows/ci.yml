@@ -35,14 +35,8 @@ jobs:
         run: black --check app tests alembic
 
       - name: Run tests
-        # The suite is hermetic — these values are never used against a
-        # real service, they only satisfy the startup configuration check.
-        env:
-          DATABASE_URL: sqlite:///./test.db
-          API_KEY_TENANT_A: ci-key-tenant-a
-          API_KEY_TENANT_B: ci-key-tenant-b
-          API_KEY_TENANT_C: ci-key-tenant-c
-          GROQ_API_KEY: ci-not-a-real-key
+        # No env block: tests/conftest.py sets the suite's own configuration
+        # and deliberately overrides anything inherited from the environment.
         run: pytest --cov=app --cov-report=term-missing --cov-report=xml
 
       - name: Upload coverage

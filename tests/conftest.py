@@ -17,11 +17,19 @@ import pytest
 
 # Must be set before app.config is imported: it calls _require() at import
 # time. Values are deliberately obvious fakes.
-os.environ.setdefault("DATABASE_URL", "sqlite:///./test.db")
-os.environ.setdefault("API_KEY_TENANT_A", "test-key-tenant-a")
-os.environ.setdefault("API_KEY_TENANT_B", "test-key-tenant-b")
-os.environ.setdefault("API_KEY_TENANT_C", "test-key-tenant-c")
-os.environ.setdefault("GROQ_API_KEY", "test-groq-key-not-real")
+#
+# Assigned, not setdefault. With setdefault an API key already present in the
+# environment — a CI job's env block, or a developer's shell — would win, the
+# app would accept that key, and every test sending TENANT_A_KEY below would
+# get a 401. The suite's configuration has to come from the suite.
+TEST_ENVIRONMENT = {
+    "DATABASE_URL": "sqlite:///./test.db",
+    "API_KEY_TENANT_A": "test-key-tenant-a",
+    "API_KEY_TENANT_B": "test-key-tenant-b",
+    "API_KEY_TENANT_C": "test-key-tenant-c",
+    "GROQ_API_KEY": "test-groq-key-not-real",
+}
+os.environ.update(TEST_ENVIRONMENT)
 
 import numpy as np  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
@@ -42,9 +50,9 @@ TestingSessionLocal = sessionmaker(
     autocommit=False, autoflush=False, bind=engine
 )
 
-TENANT_A_KEY = "test-key-tenant-a"
-TENANT_B_KEY = "test-key-tenant-b"
-TENANT_C_KEY = "test-key-tenant-c"
+TENANT_A_KEY = TEST_ENVIRONMENT["API_KEY_TENANT_A"]
+TENANT_B_KEY = TEST_ENVIRONMENT["API_KEY_TENANT_B"]
+TENANT_C_KEY = TEST_ENVIRONMENT["API_KEY_TENANT_C"]
 
 
 # --- Fakes ---
