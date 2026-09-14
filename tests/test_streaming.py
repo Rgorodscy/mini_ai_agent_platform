@@ -351,3 +351,181 @@ def test_both_endpoints_produce_the_same_steps(client, agent, fake_llm):
         s["type"] for s in streamed_steps
     ]
     assert blocking["final_response"] == dict(events)["done"]["final_response"]
+
+
+# --- A client that disconnects ---
+#
+# When a client disconnects, the server closes the response generator at
+# whichever yield it is paused on. These drive the service's generator
+# directly and close it the same way, because a test client always reads
+# the body to the end and so never exercises that path.
+
+
+def wait_for(predicate, timeout=5.0):
+    """Polls until predicate() is true; the producer finishes on its own."""
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return predicate()
+
+
+def recorded_executions():
+    from app.models.execution import Execution
+    from tests.conftest import TestingSessionLocal
+
+    session = TestingSessionLocal()
+    try:
+        return session.query(Execution).all()
+    finally:
+        session.close()
+
+
+def open_stream(db, agent_id, task="search"):
+    from app.schemas.execution import RunRequest
+    from app.services.execution_service import ExecutionService
+    from tests.conftest import TestingSessionLocal
+
+    service = ExecutionService(db, session_factory=TestingSessionLocal)
+    return service.stream_agent(
+        agent_id, "test_tenant", RunRequest(task=task, model=GROQ_MODEL)
+    )
+
+
+def test_abandoned_stream_still_records_the_execution(
+    client, db, agent, fake_llm
+):
+    """
+    Regression: the row used to be written by the response generator after
+    its loop, which never runs once the server closes the generator on a
+    disconnect. The model calls had been made and paid for, and neither the
+    audit trail nor /usage saw them.
+    """
+    fake_llm.queue(
+        make_llm_response(tool_calls=[("web_search", {"query": "x"})]),
+        make_llm_response(content="The answer."),
+    )
+
+    frames = open_stream(db, agent["id"])
+    first = next(frames)
+    frames.close()
+
+    assert "tool_result" in first
+    assert wait_for(lambda: len(recorded_executions()) == 1)
+    assert recorded_executions()[0].status == "completed"
+
+
+def test_abandoned_stream_still_counts_towards_usage(
+    client, db, agent, fake_llm
+):
+    fake_llm.queue(
+        make_llm_response(
+            tool_calls=[("web_search", {"query": "x"})],
+            prompt_tokens=100,
+            completion_tokens=10,
+        ),
+        make_llm_response(
+            content="The answer.", prompt_tokens=50, completion_tokens=5
+        ),
+    )
+
+    frames = open_stream(db, agent["id"])
+    next(frames)
+    frames.close()
+
+    assert wait_for(lambda: len(recorded_executions()) == 1)
+    assert client.get("/usage").json()["total_tokens"] == 165
+
+
+def test_final_answer_is_not_delivered_before_the_run_is_recorded(
+    client, db, agent, fake_llm
+):
+    """
+    Regression: the final answer used to be emitted before the row was
+    written, so a client could read it and disconnect before `done` — and
+    the run's tokens never reached /usage.
+    """
+    fake_llm.queue(
+        make_llm_response(tool_calls=[("web_search", {"query": "x"})]),
+        make_llm_response(content="The answer."),
+    )
+
+    frames = open_stream(db, agent["id"])
+    try:
+        for frame in frames:
+            if '"final_response"' in frame and "event: step" in frame:
+                # At the moment the answer reaches the client, the run must
+                # already be on record.
+                assert len(recorded_executions()) == 1
+                break
+        else:
+            pytest.fail("the stream never delivered a final answer")
+    finally:
+        frames.close()
+
+
+def test_a_client_that_stops_reading_does_not_block_recording(
+    client, db, agent, fake_llm, monkeypatch
+):
+    """
+    With a bounded queue and nobody reading, the producer's put times out.
+    That must mark the client as gone, not abort the run before it is
+    recorded.
+    """
+    monkeypatch.setattr("app.core.stream.QUEUE_SIZE", 1)
+    monkeypatch.setattr("app.core.stream.PUT_TIMEOUT_SECONDS", 0.05)
+
+    fake_llm.queue(
+        make_llm_response(
+            tool_calls=[
+                ("web_search", {"query": "a"}),
+                ("web_search", {"query": "b"}),
+                ("web_search", {"query": "c"}),
+            ]
+        ),
+        make_llm_response(content="The answer."),
+    )
+
+    frames = open_stream(db, agent["id"])
+    next(frames)  # start the producer, then never read again
+    try:
+        assert wait_for(lambda: len(recorded_executions()) == 1)
+    finally:
+        frames.close()
+
+
+def test_closing_the_stream_does_not_wait_for_the_run(
+    client, db, agent, fake_llm, monkeypatch
+):
+    """A disconnect should release the server side immediately."""
+    import threading
+    import time
+
+    release = threading.Event()
+    original = fake_llm.create
+
+    def slow_answer(**kwargs):
+        if len(fake_llm.calls) >= 1:
+            release.wait(timeout=5)
+        return original(**kwargs)
+
+    fake_llm.queue(
+        make_llm_response(tool_calls=[("web_search", {"query": "x"})]),
+        make_llm_response(content="The answer."),
+    )
+    monkeypatch.setattr(fake_llm, "create", slow_answer)
+
+    frames = open_stream(db, agent["id"])
+    next(frames)
+
+    started = time.monotonic()
+    frames.close()
+    elapsed = time.monotonic() - started
+
+    release.set()
+
+    assert elapsed < 1.0
+    assert wait_for(lambda: len(recorded_executions()) == 1)

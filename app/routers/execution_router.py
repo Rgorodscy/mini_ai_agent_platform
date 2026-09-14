@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from app.database import get_db
+from app.database import get_db, get_session_factory
 from app.middleware.auth import get_tenant
 from app.services.execution_service import ExecutionService
 from app.schemas.execution import (
@@ -31,6 +31,7 @@ def run_agent_streaming(
     data: RunRequest,
     tenant_id: str = Depends(get_tenant),
     db: Session = Depends(get_db),
+    session_factory=Depends(get_session_factory),
 ):
     """
     Same as /run, but emits each step as it happens over Server-Sent Events.
@@ -44,7 +45,7 @@ def run_agent_streaming(
     rejected task still returns 400 rather than a 200 whose body opens with
     an error event.
     """
-    service = ExecutionService(db)
+    service = ExecutionService(db, session_factory=session_factory)
 
     return StreamingResponse(
         service.stream_agent(agent_id, tenant_id, data),

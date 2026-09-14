@@ -177,7 +177,7 @@ app/
         ├── pipeline.py       # Orchestration (answer_from_knowledge)
         └── utils.py          # Embedder & ChromaDB clients
 
-tests/                        # 319 tests, no network access
+tests/                        # 324 tests, no network access
 evals/                        # Retrieval quality harness
 alembic/                      # Database migrations
 .github/workflows/ci.yml      # Tests, migrations, image build
@@ -261,7 +261,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-319 tests, ~30 seconds, **91% coverage**.
+324 tests, ~30 seconds, **92% coverage**.
 
 The suite is hermetic: an autouse fixture in `tests/conftest.py` replaces
 the LLM client, the embedding model and the cross-encoder with fakes for
@@ -542,6 +542,18 @@ its entire life. It also decouples the agent from how fast the client reads:
 the queue is bounded, so a slow reader applies backpressure instead of
 letting events accumulate without limit.
 
+**A streamed run records itself, and withholds its answer until it has.**
+When a client disconnects, the server closes the response generator at
+whichever `yield` it is paused on, so nothing after that point runs. The
+first version wrote the execution row there — an abandoned stream left no
+audit trail and no usage, even though the model had already been called and
+paid for. Worse, the final answer went out *before* the row was written, so
+a client could read the answer and disconnect before `done` and the tokens
+never reached `/usage`. The producer thread now writes the row with a session
+of its own, and holds the final answer back until that row exists. Verified
+by cutting a real connection after the first event: the run finished in the
+background and was recorded with all four LLM calls.
+
 **The streaming entry point is not itself a generator.** A generator body
 does not run until the first `next()`, which for a `StreamingResponse` is
 after the status line and headers have gone out. Validation inside one turns
@@ -647,6 +659,13 @@ RAG pipeline makes an expansion call, N retrievals, a rerank and a final
 call one after another with no caching. Streaming improves perceived latency
 and frees the client from waiting; it does not improve throughput. An async
 provider client is the change that would.
+
+**Disconnecting does not cancel a run.** A client that closes the stream
+stops receiving events, but the agent keeps going to completion, and the run
+is recorded and counted towards usage. That is deliberate for accounting —
+the tokens are spent either way — but it means an abandoned run still costs
+its full price. Cancellation would need a stop signal checked between graph
+steps, recorded as a distinct `cancelled` status.
 
 **Token-level streaming is not implemented.** Events arrive per step, not
 per token — the final response appears in one frame once the model finishes

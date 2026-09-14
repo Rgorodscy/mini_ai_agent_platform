@@ -77,14 +77,17 @@ def run_in_thread(
     thread = threading.Thread(target=worker, daemon=True)
     thread.start()
 
-    try:
-        while True:
-            item = events.get()
-            if item is _DONE:
-                break
-            yield item
-    finally:
-        thread.join(timeout=5)
+    while True:
+        item = events.get()
+        if item is _DONE:
+            break
+        yield item
+
+    # Only reached when the producer finished. If the consumer is closed
+    # early — a client disconnecting — there is deliberately no join: the
+    # producer is expected to finish its work on its own, and blocking the
+    # closing thread for the length of an agent run would gain nothing.
+    thread.join()
 
     if failure:
         raise failure[0]

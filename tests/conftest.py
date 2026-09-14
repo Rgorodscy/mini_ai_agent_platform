@@ -29,7 +29,7 @@ from sqlalchemy import create_engine  # noqa: E402
 from sqlalchemy.orm import sessionmaker  # noqa: E402
 
 from app.config import API_KEYS, GROQ_MODEL  # noqa: E402
-from app.database import Base, get_db  # noqa: E402
+from app.database import Base, get_db, get_session_factory  # noqa: E402
 from app.main import app  # noqa: E402
 from app.middleware.auth import get_tenant  # noqa: E402
 
@@ -287,6 +287,9 @@ def client(db):
         return "test_tenant"
 
     app.dependency_overrides[get_db] = override_get_db
+    # Streamed runs record themselves from a worker thread with their own
+    # session; it must land in the test database too.
+    app.dependency_overrides[get_session_factory] = lambda: TestingSessionLocal
     app.dependency_overrides[get_tenant] = override_get_tenant
 
     yield TestClient(app)
@@ -306,6 +309,9 @@ def raw_client():
             db.close()
 
     app.dependency_overrides[get_db] = override_get_db
+    # Streamed runs record themselves from a worker thread with their own
+    # session; it must land in the test database too.
+    app.dependency_overrides[get_session_factory] = lambda: TestingSessionLocal
     yield TestClient(app, raise_server_exceptions=False)
     app.dependency_overrides.clear()
 
