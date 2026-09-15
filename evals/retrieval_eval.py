@@ -36,7 +36,7 @@ import time
 from dataclasses import dataclass
 
 from app.core.rag.reranker import rerank
-from app.core.rag.retriever import retrieve_with_metadata
+from app.core.rag.retriever import retrieve_with_variations
 from evals.dataset import CORPUS, QUERIES, Query
 
 # Candidates pulled before reranking. Retrieval widens here so the
@@ -131,22 +131,10 @@ def _retrieve_for(
     else:
         variations = [query.text]
 
-    # Merge across variations, keeping the best (smallest) distance per
-    # chunk so the merged list stays ordered by relevance rather than by
-    # which variation happened to run first.
-    best: dict[str, dict] = {}
-    for variation in variations:
-        for hit in retrieve_with_metadata(
-            variation, tenant_id, n_results=CANDIDATE_POOL
-        ):
-            existing = best.get(hit["text"])
-            if existing is None or (hit["distance"] or 0) < (
-                existing["distance"] or 0
-            ):
-                best[hit["text"]] = hit
-
-    candidates = sorted(
-        best.values(), key=lambda h: h["distance"] if h["distance"] else 0
+    candidates = retrieve_with_variations(
+        query_variations=variations,
+        tenant_id=tenant_id,
+        n_results=CANDIDATE_POOL,
     )
 
     if use_rerank and candidates:

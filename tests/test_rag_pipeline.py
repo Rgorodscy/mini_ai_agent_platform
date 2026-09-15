@@ -2,7 +2,7 @@ from app.core.rag.indexer import ingest
 from app.core.rag.pipeline import NO_RESULTS, answer_from_knowledge
 from app.core.rag.query_expander import expand_query
 from app.core.rag.reranker import rerank
-from tests.conftest import make_llm_response
+from tests.conftest import fake_search, make_hit, make_llm_response
 
 
 def json_response(payload: str):
@@ -226,6 +226,40 @@ def test_top_k_limits_context_without_rerank(monkeypatch, fake_llm):
 
     system_prompt = fake_llm.calls[-1]["messages"][0]["content"]
     assert system_prompt.count("Unrelated document number") == 1
+
+
+def test_without_rerank_the_context_gets_the_closest_chunk_of_any_variation(
+    monkeypatch, fake_llm
+):
+    """
+    Regression: the pipeline merged variations in first-seen order, so the
+    original query's hits always filled the top positions. Without
+    reranking, a closer chunk that only a variation found never reached
+    the context.
+    """
+    monkeypatch.setattr("app.core.rag.pipeline.RAG_USE_EXPANSION", True)
+    monkeypatch.setattr("app.core.rag.pipeline.RAG_USE_RERANK", False)
+    monkeypatch.setattr("app.core.rag.pipeline.RAG_TOP_K", 1)
+    fake_search(
+        monkeypatch,
+        {
+            "original": [make_hit("Chunk the original query found.", 0.40)],
+            "variation": [
+                make_hit("Closer chunk only the variation found.", 0.10)
+            ],
+        },
+    )
+    fake_llm.queue(
+        json_response('["variation"]'),
+        make_llm_response(content="Answer."),
+    )
+
+    answer_from_knowledge("original", "t1")
+
+    system_prompt = fake_llm.calls[-1]["messages"][0]["content"]
+
+    assert "Closer chunk only the variation found." in system_prompt
+    assert "Chunk the original query found." not in system_prompt
 
 
 def test_both_stages_disabled_still_answers(monkeypatch, fake_llm):

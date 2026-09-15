@@ -8,7 +8,7 @@ from app.config import (
 from app.core.llm import chat_completion
 from app.core.rag.query_expander import expand_query
 from app.core.rag.reranker import rerank
-from app.core.rag.retriever import retrieve
+from app.core.rag.retriever import retrieve_with_variations
 from app.logger import get_logger
 
 logger = get_logger(__name__)
@@ -40,16 +40,13 @@ def answer_from_knowledge(query: str, tenant_id: str) -> str:
     else:
         queries = [query]
 
-    # dict.fromkeys semantics: preserve first-seen order while deduplicating
-    # chunks that several query variations retrieved in common.
-    seen: dict[str, None] = {}
-    for expanded in queries:
-        for chunk in retrieve(
-            query=expanded, tenant_id=tenant_id, n_results=RAG_CANDIDATE_POOL
-        ):
-            seen.setdefault(chunk, None)
+    hits = retrieve_with_variations(
+        query_variations=queries,
+        tenant_id=tenant_id,
+        n_results=RAG_CANDIDATE_POOL,
+    )
 
-    candidates = list(seen)
+    candidates = [hit["text"] for hit in hits]
     if not candidates:
         logger.info(f"RAG no candidates | tenant={tenant_id}")
         return NO_RESULTS

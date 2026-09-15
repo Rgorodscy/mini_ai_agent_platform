@@ -121,7 +121,7 @@ the model choosing to answer in plain text.
 ```
 query
   → expand_query    LLM rewrites it into several phrasings (widen recall)
-  → retrieve        vector search per variation, deduplicated
+  → retrieve        vector search per variation, merged by closest distance
   → rerank          cross-encoder scores query↔chunk pairs (raise precision)
   → answer          top chunks become grounding context for the LLM
 ```
@@ -184,6 +184,20 @@ search passages, not handbook prose. The honest conclusion is narrower than
 the table looks: on *this* corpus reranking does not earn its latency, and
 the question is now answerable at all, which it was not before.
 
+**Until this was fixed, production did not match the `+expansion` row.**
+The eval and the pipeline merged the variations' hits separately. The eval
+kept each chunk's smallest distance and sorted by it; the pipeline kept
+first-seen order, so the original query's hits always came first. With
+reranking on, that made no difference — the cross-encoder reorders every
+candidate. With reranking off, expansion changed nothing at all:
+`RAG_CANDIDATE_POOL` (10) exceeds `RAG_TOP_K` (3), so the original query's
+search filled every context slot before a variation's hit could reach one.
+Reading this table as "keep expansion, drop reranking" bought baseline
+quality at expansion's latency. Both now call `retrieve_with_variations`,
+so the numbers describe what production does — and a regression test
+fails if a closer chunk that only a variation found is kept out of the
+context.
+
 Both stages are therefore switches, not assumptions — `RAG_USE_EXPANSION`
 and `RAG_USE_RERANK`. Run the harness against your own documents before
 trusting either default.
@@ -218,13 +232,13 @@ app/
     └── rag/
         ├── chunker.py        # Semantic + recursive chunking
         ├── indexer.py        # Ingestion
-        ├── retriever.py      # Vector search
+        ├── retriever.py      # Vector search, merge across variations
         ├── query_expander.py # Query rewriting
         ├── reranker.py       # Cross-encoder reranking
         ├── pipeline.py       # Orchestration (answer_from_knowledge)
         └── utils.py          # Embedder & ChromaDB clients
 
-tests/                        # 348 tests, no network access
+tests/                        # 363 tests, no network access
 evals/                        # Retrieval quality harness
 alembic/                      # Database migrations
 .github/workflows/ci.yml      # Tests, migrations, image build
@@ -308,7 +322,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-348 tests, ~40 seconds, **92% coverage**.
+363 tests, ~40 seconds, **92% coverage**.
 
 The suite is hermetic: an autouse fixture in `tests/conftest.py` replaces
 the LLM client, the embedding model and the cross-encoder with fakes for

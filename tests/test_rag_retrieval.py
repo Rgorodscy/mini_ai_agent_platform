@@ -8,8 +8,9 @@ mocked away.
 """
 
 from app.core.rag.indexer import ingest
-from app.core.rag.retriever import retrieve
+from app.core.rag.retriever import retrieve, retrieve_with_variations
 from app.core.rag.utils import get_collection
+from tests.conftest import fake_search, make_hit
 
 DOC = (
     "The refund policy allows returns within 30 days.\n\n"
@@ -148,3 +149,101 @@ def test_vector_store_is_isolated_between_tests():
     order.
     """
     assert get_collection("t1").count() == 0
+
+
+# --- Merging hits across query variations ---
+
+
+def _merge(*variations):
+    return retrieve_with_variations(
+        list(variations), tenant_id="t1", n_results=10
+    )
+
+
+def test_variations_merge_by_smallest_distance(monkeypatch):
+    fake_search(
+        monkeypatch,
+        {
+            "original": [make_hit("A", 0.50), make_hit("B", 0.60)],
+            "variation": [make_hit("C", 0.10), make_hit("A", 0.30)],
+        },
+    )
+
+    hits = _merge("original", "variation")
+
+    assert [h["text"] for h in hits] == ["C", "A", "B"]
+    assert [h["distance"] for h in hits] == [0.10, 0.30, 0.60]
+    assert [h["doc_id"] for h in hits] == ["doc-C", "doc-A", "doc-B"]
+
+
+def test_missing_distance_ranks_last_and_perfect_match_first(monkeypatch):
+    """
+    A perfect match has distance 0.0, which is falsy: ranking by
+    `distance or inf` would send it last alongside the hit with no distance.
+    """
+    fake_search(
+        monkeypatch,
+        {
+            "original": [
+                make_hit("A", None),
+                make_hit("B", 0.0),
+                make_hit("C", 0.40),
+            ]
+        },
+    )
+
+    hits = _merge("original")
+
+    assert [h["text"] for h in hits] == ["B", "C", "A"]
+    assert [h["distance"] for h in hits] == [0.0, 0.40, None]
+    assert [h["doc_id"] for h in hits] == ["doc-B", "doc-C", "doc-A"]
+
+
+def test_a_real_distance_replaces_a_missing_one(monkeypatch):
+    fake_search(
+        monkeypatch,
+        {
+            "original": [make_hit("A", None), make_hit("B", 0.20)],
+            "variation": [make_hit("A", 0.10)],
+        },
+    )
+
+    hits = _merge("original", "variation")
+
+    assert [(h["text"], h["distance"]) for h in hits] == [
+        ("A", 0.10),
+        ("B", 0.20),
+    ]
+
+
+def test_a_missing_distance_does_not_replace_a_real_one(monkeypatch):
+    """
+    Regression guard: comparing the incoming None against a stored distance
+    raises TypeError, so a missing distance must never enter that branch.
+    """
+    fake_search(
+        monkeypatch,
+        {
+            "original": [make_hit("A", 0.0), make_hit("B", 0.20)],
+            "variation": [make_hit("A", None)],
+        },
+    )
+
+    hits = _merge("original", "variation")
+
+    assert [(h["text"], h["distance"]) for h in hits] == [
+        ("A", 0.0),
+        ("B", 0.20),
+    ]
+
+
+def test_merging_does_not_modify_the_hits_it_receives(monkeypatch):
+    first_a = make_hit("A", 0.50)
+    fake_search(
+        monkeypatch,
+        {"original": [first_a], "variation": [make_hit("A", 0.30)]},
+    )
+
+    _merge("original", "variation")
+
+    assert first_a["distance"] == 0.50
