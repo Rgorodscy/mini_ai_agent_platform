@@ -205,6 +205,35 @@ def make_llm_response(
     )
 
 
+def make_hit(text, distance):
+    """A retrieval hit shaped like retrieve_with_metadata's output."""
+    return {
+        "text": text,
+        "doc_id": f"doc-{text}",
+        "chunk": 0,
+        "distance": distance,
+    }
+
+
+def fake_search(monkeypatch, hits_by_query):
+    """
+    Replaces retrieve_with_metadata with fixed hits per query.
+
+    Patched where retrieve_with_variations looks the name up, so the real
+    merge runs against hits whose distances the test chooses — a real
+    vector store with the fake embedder gives no control over them. An
+    unexpected query raises KeyError rather than returning nothing, so a
+    caller that searches for the wrong thing fails loudly.
+    """
+
+    def search(query, tenant_id, n_results=3):
+        return hits_by_query[query]
+
+    monkeypatch.setattr(
+        "app.core.rag.retriever.retrieve_with_metadata", search
+    )
+
+
 # --- Autouse isolation ---
 
 
